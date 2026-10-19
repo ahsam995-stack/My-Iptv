@@ -7,6 +7,11 @@
     "userInterfaceStyle": "dark",
     "android": {
       "package": "com.myiptv.app"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "my-iptv-project-id"
+      }
     }
   }
 }
