@@ -1,0 +1,14 @@
+{
+      "expo": {
+            "name": "My iptv",
+                "slug": "My-iptv",
+                    "version": "1.0.0",
+                        "android": {
+                                  "package": "com.ahsam995.myiptv"
+                        }
+      }
+}
+
+                        }
+      }
+}
