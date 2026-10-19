@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "My IPTV",
-    "slug": "My-Iptv",
+    "slug": "my-iptv",
     "version": "1.0.0",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
