@@ -1,13 +1,25 @@
 {
   "expo": {
-    "name": "My IPTV",
+    "name": "My iptv",
     "slug": "my-iptv",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
-    "owner": "kocxs-organization",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#121212"
+    },
+    "ios": {
+      "supportsTablet": true
+    },
     "android": {
-      "package": "com.myiptv.app"
+      "package": "com.kocxs.myiptv",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#121212"
+      }
     },
     "extra": {
       "eas": {
