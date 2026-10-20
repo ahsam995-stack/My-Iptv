@@ -10,7 +10,7 @@ export async function authenticate(s: Session) {
   };
 }
 
-// 1. أقسام قنوات النايلسات المخصصة
+// 1. الأقسام المخصصة (قنوات بث مباشر، أفلام، مسلسلات)
 export async function getCategories(s: Session, kind: Kind): Promise<Category[]> {
   if (kind === 'live') {
     return [
@@ -21,13 +21,19 @@ export async function getCategories(s: Session, kind: Kind): Promise<Category[]>
     ];
   } else if (kind === 'movie') {
     return [
-      { category_id: '200', category_name: '🎬 مكتبة الأفلام والمسرحيات' }
+      { category_id: 'cat_m_action', category_name: '🎬 أفلام حركة ومغامرة (Action)' },
+      { category_id: 'cat_m_sci', category_name: '🚀 أفلام خيال علمي (Sci-Fi)' },
+      { category_id: 'cat_m_anim', category_name: '🎨 أفلام أنيميشن ورسوم متحركة' }
+    ];
+  } else if (kind === 'series') {
+    return [
+      { category_id: 'cat_s_docu', category_name: '📺 مسلسلات وثائقية وقصيرة' }
     ];
   }
   return [];
 }
 
-// 2. قاعدة بيانات قنوات نايلسات المفتوحة (Nilesat Channels Database)
+// 2. قاعدة بيانات قنوات نايلسات الكاملة (Nilesat Channels Database)
 const nilesatChannels = [
   // --- الأخبار (News) ---
   {
@@ -129,46 +135,106 @@ const nilesatChannels = [
   }
 ];
 
-// 3. دالة جلب العناصر مفلترة حسب القسم المحدد
+// 3. قاعدة بيانات الأفلام المجانية (Free Movies Database)
+const freeMovies = [
+  {
+    id: 501,
+    category_id: 'cat_m_anim',
+    name: 'Big Buck Bunny (أرنب بيك باك)',
+    image: 'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c5/Big_buck_bunny_poster_big.jpg/800px-Big_buck_bunny_poster_big.jpg',
+    url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+    ext: 'mp4'
+  },
+  {
+    id: 502,
+    category_id: 'cat_m_action',
+    name: 'Sintel (مغامرة سينتل والتنين)',
+    image: 'https://upload.wikimedia.org/wikipedia/commons/thumb/a/a7/Sintel_poster.jpg/800px-Sintel_poster.jpg',
+    url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/Sintel.mp4',
+    ext: 'mp4'
+  },
+  {
+    id: 503,
+    category_id: 'cat_m_sci',
+    name: 'Tears of Steel (دموع الصلب - خيال علمي)',
+    image: 'https://upload.wikimedia.org/wikipedia/commons/thumb/0/0c/Tears_of_Steel_poster.jpg/800px-Tears_of_Steel_poster.jpg',
+    url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4',
+    ext: 'mp4'
+  },
+  {
+    id: 504,
+    category_id: 'cat_m_action',
+    name: 'Bullrun Adventure',
+    image: 'https://images.unsplash.com/photo-1536440136628-849c177e76a1?q=80&w=500',
+    url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/WeAreGoingOnBullrun.mp4',
+    ext: 'mp4'
+  }
+];
+
+// 4. قاعدة بيانات المسلسلات المجانية (Free Series Database)
+const freeSeries = [
+  {
+    id: 801,
+    category_id: 'cat_s_docu',
+    name: 'مسلسل رحلة الكوكب (Planet Voyage)',
+    image: 'https://images.unsplash.com/photo-1451187580459-43490279c0fa?q=80&w=500',
+    episodes: [
+      { id: 'ep_1', name: 'الحلقة 1: البداية', url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4' },
+      { id: 'ep_2', name: 'الحلقة 2: الأعماق', url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerEscapes.mp4' },
+      { id: 'ep_3', name: 'الحلقة 3: الفضاء', url: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerFun.mp4' }
+    ]
+  }
+];
+
+// 5. دالة جلب العناصر (قنوات، أفلام، مسلسلات) مفلترة
 export async function getItems(s: Session, kind: Kind, categoryId: string): Promise<Item[]> {
   if (kind === 'live') {
-    // إذا تم تحديد قسم معني يرجع القنوات الخاصة به فقط، أما إذا لم يحدد يرجع الكل
-    const filtered = categoryId 
-      ? nilesatChannels.filter(ch => ch.category_id === categoryId)
-      : nilesatChannels;
-
-    return filtered.map(ch => ({
-      id: ch.id,
-      name: ch.name,
-      image: ch.image
-    }));
+    const list = categoryId ? nilesatChannels.filter(ch => ch.category_id === categoryId) : nilesatChannels;
+    return list.map(ch => ({ id: ch.id, name: ch.name, image: ch.image }));
   } else if (kind === 'movie') {
-    return [
-      { id: 501, name: 'فيديو تجريبي عالي الدقة (MP4)', image: 'https://via.placeholder.com/150', ext: 'mp4' }
-    ];
+    const list = categoryId ? freeMovies.filter(m => m.category_id === categoryId) : freeMovies;
+    return list.map(m => ({ id: m.id, name: m.name, image: m.image, ext: m.ext }));
+  } else if (kind === 'series') {
+    const list = categoryId ? freeSeries.filter(s => s.category_id === categoryId) : freeSeries;
+    return list.map(sr => ({ id: sr.id, name: sr.name, image: sr.image }));
   }
   return [];
 }
 
-export const getSeriesInfo = async (s: Session, id: number): Promise<SeriesInfo> => ({} as any);
-
-// 4. دالة مطابقة وتوجيه رابط البث الخاص بالقناة المحددة
-export const liveUrl = (s: Session, id: any) => {
-  // مطابقة الـ ID برقم أو بنص مرن (==) لتفادي الخلل
-  const channel = nilesatChannels.find(ch => ch.id == id);
-  
-  if (channel && channel.url) {
-    return channel.url;
+// 6. تفاصيل المسلسل والحلقات
+export const getSeriesInfo = async (s: Session, id: number): Promise<SeriesInfo> => {
+  const series = freeSeries.find(sr => sr.id == id);
+  if (series) {
+    return {
+      episodes: {
+        '1': series.episodes.map(ep => ({
+          id: ep.id,
+          title: ep.name,
+          container_extension: 'mp4'
+        }))
+      }
+    } as any;
   }
-  
-  // في حال وجود أي خطأ بالمعرف، يرجع رابط قناة الجزيرة كافتراضي بدلاً من الفيديو الموحد القديم
-  return nilesatChannels[0].url;
+  return {} as any;
 };
 
-export const movieUrl = (s: Session, id: number, ext = 'mp4') => {
-  return 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
+// 7. توجيه روابط التشغيل الحية
+export const liveUrl = (s: Session, id: any) => {
+  const channel = nilesatChannels.find(ch => ch.id == id);
+  return channel ? channel.url : nilesatChannels[0].url;
 };
 
-export const episodeUrl = (s: Session, id: string, ext = 'mp4') => {
-  return 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
+// 8. توجيه روابط الأفلام
+export const movieUrl = (s: Session, id: any, ext = 'mp4') => {
+  const movie = freeMovies.find(m => m.id == id);
+  return movie ? movie.url : freeMovies[0].url;
+};
+
+// 9. توجيه روابط الحلقات
+export const episodeUrl = (s: Session, episodeId: string, ext = 'mp4') => {
+  for (const srs of freeSeries) {
+    const ep = srs.episodes.find(e => e.id === episodeId);
+    if (ep) return ep.url;
+  }
+  return 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4';
 };
