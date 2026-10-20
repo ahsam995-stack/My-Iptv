@@ -74,6 +74,10 @@ jobs:
       - name: Build Local APK
         run: |
           npx expo prebuild --platform android --clean
+          mkdir -p android/app/src/main/res/values
+          if ! grep -rq "splashscreen_background" android/app/src/main/res/values/; then
+            printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="splashscreen_background">#000000</color>\n</resources>\n' > android/app/src/main/res/values/splash_fix.xml
+          fi
           cd android
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon
