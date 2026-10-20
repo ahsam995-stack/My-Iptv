@@ -46,10 +46,11 @@ jobs:
 
           // ---------- YOUTUBE: عدّل هذي القوائم وضيف فيديوهاتك ----------
           // vid = الجزء الأخير من رابط اليوتيوب بعد v=
-          const YT_VIDEOS: { title: string; vid: string }[] = [
+                    const YT_VIDEOS: { title: string; vid: string }[] = [
             { title: 'Big Buck Bunny', vid: 'aqz-KE-bpKQ' },
             { title: 'Sintel', vid: 'eRsGyueVLvQ' },
             { title: 'Tears of Steel', vid: 'R6MlUcmOul8' },
+            { title: 'ابن عباد', vid: '23HNDEik2fU' },
           ];
           // بثوث مباشرة (أرقامها ممكن تتغير وبعضها ما يسمح بالتشغيل داخل التطبيق)
           const YT_LIVE: { title: string; vid: string }[] = [
