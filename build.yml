@@ -35,35 +35,40 @@ jobs:
             return { status: 'Active', exp_date: '2027-01-01', max_connections: '5', username: s.username };
           }
 
+          const COLORS = ['7c5cff', 'e5484d', '30a46c', 'f5a524', '0091ff', 'd6409f'];
+          const av = (n: string, i: number) =>
+            `https://ui-avatars.com/api/?name=${encodeURIComponent(n)}&background=${COLORS[i % COLORS.length]}&color=fff&size=256&bold=true`;
+
+          const LIVE_CATS: Record<string, { name: string; items: string[] }> = {
+            '1': { name: 'أخبار', items: ['BBC News', 'CNN', 'Al Jazeera', 'Sky News', 'France 24', 'DW News'] },
+            '2': { name: 'رياضة', items: ['ESPN', 'Sky Sports', 'beIN Sports', 'Eurosport', 'Fox Sports', 'BT Sport'] },
+            '3': { name: 'أفلام ومسلسلات', items: ['HBO', 'Showtime', 'AMC', 'TNT', 'FX', 'Starz'] },
+            '4': { name: 'أطفال', items: ['Cartoon Network', 'Disney Channel', 'Nickelodeon', 'Baby TV', 'Boomerang'] },
+            '5': { name: 'موسيقى', items: ['MTV', 'VH1', 'Trace', 'Vevo', 'Mezzo'] },
+          };
+
+          const MOVIE_CATS: Record<string, { name: string; items: string[] }> = {
+            '11': { name: 'أكشن', items: ['Mad Max Fury Road', 'John Wick', 'Gladiator', 'Die Hard', 'The Dark Knight'] },
+            '12': { name: 'خيال علمي', items: ['Inception', 'Interstellar', 'The Matrix', 'Avatar', 'Blade Runner'] },
+            '13': { name: 'دراما', items: ['The Godfather', 'Titanic', 'Forrest Gump', 'Shawshank Redemption', 'Fight Club'] },
+            '14': { name: 'كوميدي', items: ['The Hangover', 'Home Alone', 'Superbad', 'Mean Girls', 'Bruce Almighty'] },
+          };
+
           export async function getCategories(s: Session, kind: Kind): Promise<Category[]> {
-            if (kind === 'live') {
-              return [{ category_id: '1', category_name: 'بثوث تجريبية مباشرة (Live)' }];
-            } else if (kind === 'movie') {
-              return [{ category_id: '2', category_name: 'أفلام وفيديوهات تجريبية (VOD)' }];
-            }
-            return [];
+            const src = kind === 'live' ? LIVE_CATS : kind === 'movie' ? MOVIE_CATS : {};
+            return Object.keys(src).map((id) => ({ category_id: id, category_name: (src as any)[id].name }));
           }
 
           export async function getItems(s: Session, kind: Kind, categoryId: string): Promise<Item[]> {
-            if (kind === 'live') {
-              return [
-                {
-                  id: 101,
-                  name: 'قناة تجريبية 1 - بث مباشر (HLS)',
-                  image: 'https://via.placeholder.com/150',
-                }
-              ];
-            } else if (kind === 'movie') {
-              return [
-                {
-                  id: 201,
-                  name: 'فيديو تجريبي 1 (Big Buck Bunny)',
-                  image: 'https://via.placeholder.com/150',
-                  ext: 'mp4',
-                }
-              ];
-            }
-            return [];
+            const src: any = kind === 'live' ? LIVE_CATS : kind === 'movie' ? MOVIE_CATS : {};
+            const cat = src[categoryId];
+            if (!cat) return [];
+            return cat.items.map((n: string, i: number) => ({
+              id: Number(categoryId) * 100 + i,
+              name: n,
+              image: av(n, i),
+              ext: 'mp4',
+            }));
           }
 
           export const getSeriesInfo = async (s: Session, id: number): Promise<SeriesInfo> => ({} as any);
@@ -73,7 +78,7 @@ jobs:
           export const episodeUrl = (s: Session, id: string, ext = 'mp4') => 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
           EOF
           done
-
+          
       - name: Patch player (simple)
         run: |
           for f in $(find "$GITHUB_WORKSPACE" -name PlayerScreen.tsx -not -path "*/node_modules/*"); do
