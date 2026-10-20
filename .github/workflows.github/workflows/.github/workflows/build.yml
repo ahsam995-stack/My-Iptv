@@ -46,7 +46,8 @@ jobs:
             '@react-navigation/native': '^6.1.18',
             '@react-navigation/native-stack': '^6.11.0',
             '@react-navigation/bottom-tabs': '^6.6.1',
-            '@react-native-async-storage/async-storage': '1.23.1'
+            '@react-native-async-storage/async-storage': '1.23.1',
+            'expo-secure-store': '~13.0.2'
           });
           p.overrides = Object.assign({}, p.overrides, {
             'expo-modules-core': '~1.12.26',
@@ -59,6 +60,16 @@ jobs:
         run: |
           npm install
           npx expo install --fix
+
+      - name: Auto-install missing libraries
+        run: |
+          for i in 1 2 3 4 5; do
+            OUT=$(npx expo export --platform android 2>&1 || true)
+            MISSING=$(echo "$OUT" | grep -oP "Unable to resolve module \K[^ ]+" | head -1)
+            if [ -z "$MISSING" ]; then break; fi
+            echo "Installing missing: $MISSING"
+            npx expo install "$MISSING" || npm install "$MISSING"
+          done
 
       - name: Build Local APK
         run: |
