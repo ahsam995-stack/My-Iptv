@@ -16,7 +16,7 @@ jobs:
         run: |
           unzip -o iptv-app.zip -d /tmp/z
           cd /tmp/z
-          if [ "$(ls -1 \vert{} wc -l)" = "1" ] && [ -d "$(ls -1)" ]; then cd "$(ls -1)"; fi
+          if [ "$(ls -1 | wc -l)" = "1" ] && [ -d "$(ls -1)" ]; then cd "$(ls -1)"; fi
           cp -r . "$GITHUB_WORKSPACE"/
 
       - name: Patch activation (200171)
@@ -25,7 +25,7 @@ jobs:
             printf "import { Session } from '../types';\n\nexport async function activate(code: string): Promise<Session> {\n  const validCode = '200171';\n  if (code.trim() !== validCode) throw new Error('كود التفعيل غير صحيح، حاول مرة أخرى');\n  return { success: true, serverUrl: 'http://localhost', username: code.trim(), password: 'password' };\n}\n" > "$f"
           done
 
-      - name: Patch xtream (Nilesat & Content)
+      - name: Patch xtream (free legal content)
         run: |
           for f in $(find "$GITHUB_WORKSPACE" -name xtream.ts -not -path "*/node_modules/*"); do
           cat > "$f" << 'EOF'
@@ -35,53 +35,118 @@ jobs:
             return { status: 'Active', exp_date: '2027-01-01', max_connections: '5', username: s.username };
           }
 
-          const COLORS = ['7c5cff', 'e5484d', '30a46c', 'f5a524', '0091ff', 'd6409f'];
-          const av = (n: string, i: number) =>
-            `https://ui-avatars.com/api/?name=${encodeURIComponent(n)}&background=${COLORS[i % COLORS.length]}&color=fff&size=256&bold=true`;
+          // ---------- helpers ----------
+          let counter = 1000;
+          const urlById = new Map<number, string>();
+          const seriesById = new Map<number, string>();
+          const NOIMG = 'https://placehold.co/400x400/111827/ffffff.png';
+          const arImg = (id: string) => `https://archive.org/services/img/${id}`;
 
-          const LIVE_CATS: Record<string, { name: string; items: string[] }> = {
-            '1': { name: 'قنوات نايلسات الرياضية', items: ['beIN Sports 1', 'beIN Sports 2', 'AD Sports 1', 'Dubai Sports', 'KSA Sports'] },
-            '2': { name: 'قنوات نايلسات العامة والأخبار', items: ['Al Jazeera', 'Al Arabiya', 'CBC Egypt', 'On Time Sports', 'Al Hayat'] },
-            '3': { name: 'قنوات الأطفال والكرتون', items: ['Spacetoon', 'MBC 3', 'Cartoon Network Arabic', 'Nickelodeon Arabia'] },
-            '4': { name: 'قنوات الأفلام والدراما', items: ['MBC 2', 'MBC Action', 'Rotana Cinema', 'Rotana Classic'] },
+          // ---------- LIVE: free public channels (with real logos) ----------
+          const LIVE_M3U = 'https://iptv-org.github.io/iptv/languages/ara.m3u';
+          const GROUPS: Record<string, string> = {
+            News: 'أخبار', Sports: 'رياضة', Kids: 'أطفال', Movies: 'أفلام', Music: 'موسيقى',
+            Religious: 'دينية', Entertainment: 'ترفيه', General: 'عامة', Documentary: 'وثائقية',
+            Series: 'مسلسلات', Culture: 'ثقافة', Lifestyle: 'منوعات', Undefined: 'قنوات أخرى',
+          };
+          let live: { cats: Category[]; items: Record<string, Item[]> } | null = null;
+
+          async function loadLive() {
+            if (live) return live;
+            const text = await (await fetch(LIVE_M3U)).text();
+            const lines = text.split(/\r?\n/);
+            const items: Record<string, Item[]> = {};
+            for (let i = 0; i < lines.length; i++) {
+              const l = lines[i];
+              if (!l.startsWith('#EXTINF')) continue;
+              let url = '';
+              for (let j = i + 1; j < lines.length; j++) {
+                if (lines[j].trim() && !lines[j].startsWith('#')) { url = lines[j].trim(); break; }
+              }
+              if (!url.startsWith('https://')) continue;
+              const attrs: Record<string, string> = {};
+              l.replace(/([\w-]+)="([^"]*)"/g, (_m, k, v) => { attrs[k] = v; return ''; });
+              const name = l.substring(l.lastIndexOf(',') + 1).trim();
+              if (!name) continue;
+              const g = (attrs['group-title'] || 'Undefined').split(';')[0] || 'Undefined';
+              const id = ++counter;
+              urlById.set(id, url);
+              (items[g] = items[g] || []).push({ id, name, image: attrs['tvg-logo'] || NOIMG, ext: 'm3u8' } as any);
+            }
+            const cats = Object.keys(items).map((g) => ({ category_id: 'L:' + g, category_name: GROUPS[g] || g }));
+            live = { cats, items };
+            return live;
+          }
+
+          // ---------- MOVIES / SERIES: Internet Archive (public domain) ----------
+          const MOVIE_CATS: Record<string, { name: string; q: string }> = {
+            '11': { name: 'أفلام كلاسيكية (ملك عام)', q: 'collection:feature_films AND mediatype:movies' },
+            '12': { name: 'أفلام عربية', q: 'mediatype:movies AND (language:Arabic OR subject:arabic)' },
+            '13': { name: 'أفلام كرتون', q: 'collection:animationandcartoons AND mediatype:movies' },
+          };
+          const SERIES_CATS: Record<string, { name: string; q: string }> = {
+            '21': { name: 'مسلسلات كلاسيكية', q: 'collection:classic_tv AND mediatype:movies' },
+            '22': { name: 'كرتون كلاسيكي', q: 'collection:classic_cartoons AND mediatype:movies' },
           };
 
-          const MOVIE_CATS: Record<string, { name: string; items: string[] }> = {
-            '11': { name: 'أفلام أجنبية حصرية', items: ['Avatar The Way of Water', 'The Dark Knight', 'Inception', 'Interstellar', 'Gladiator'] },
-            '12': { name: 'أفلام أكشن ومغامرة', items: ['John Wick Chapter 4', 'Mad Max Fury Road', 'Fast X', 'Extraction'] },
-            '13': { name: 'أفلام عربية ومصرية', items: ['ولاد رزق 3', 'بيت الروبي', 'كيرة والجن', 'العميل صفر'] },
-          };
+          async function archiveList(q: string, rows = 24): Promise<{ identifier: string; title: any }[]> {
+            const u = `https://archive.org/advancedsearch.php?q=${encodeURIComponent(q)}&fl%5B%5D=identifier&fl%5B%5D=title&sort%5B%5D=downloads+desc&rows=${rows}&output=json`;
+            const j = await (await fetch(u)).json();
+            return j.response.docs || [];
+          }
 
-          const SERIES_CATS: Record<string, { name: string; items: string[] }> = {
-            '21': { name: 'مسلسلات رمضان وعربية', items: ['العتاولة', 'الحشاشين', 'الاضرورة', 'أشغال شقة'] },
-            '22': { name: 'مسلسلات أجنبية مترجمة', items: ['Breaking Bad', 'Game of Thrones', 'Stranger Things', 'Peaky Blinders'] },
-          };
+          async function mp4Files(identifier: string): Promise<string[]> {
+            const j = await (await fetch(`https://archive.org/metadata/${identifier}`)).json();
+            return (j.files || []).map((x: any) => x.name as string).filter((n: string) => /\.mp4$/i.test(n)).sort();
+          }
 
           export async function getCategories(s: Session, kind: Kind): Promise<Category[]> {
-            const src = kind === 'live' ? LIVE_CATS : kind === 'movie' ? MOVIE_CATS : SERIES_CATS;
-            return Object.keys(src).map((id) => ({ category_id: id, category_name: (src as any)[id].name }));
+            if (kind === 'live') return (await loadLive()).cats;
+            const src = kind === 'movie' ? MOVIE_CATS : SERIES_CATS;
+            return Object.keys(src).map((id) => ({ category_id: id, category_name: src[id].name }));
           }
 
           export async function getItems(s: Session, kind: Kind, categoryId: string): Promise<Item[]> {
-            const src: any = kind === 'live' ? LIVE_CATS : kind === 'movie' ? MOVIE_CATS : SERIES_CATS;
+            if (kind === 'live') {
+              const l = await loadLive();
+              return l.items[categoryId.replace('L:', '')] || [];
+            }
+            const src = kind === 'movie' ? MOVIE_CATS : SERIES_CATS;
             const cat = src[categoryId];
             if (!cat) return [];
-            return cat.items.map((n: string, i: number) => ({
-              id: Number(categoryId) * 100 + i,
-              name: n,
-              image: av(n, i),
-              ext: 'mp4',
+            const docs = await archiveList(cat.q);
+            if (kind === 'series') {
+              return docs.map((d) => {
+                const id = ++counter;
+                seriesById.set(id, d.identifier);
+                return { id, name: String(d.title), image: arImg(d.identifier), ext: 'mp4' } as any;
+              });
+            }
+            const out = await Promise.all(docs.map(async (d) => {
+              try {
+                const files = await mp4Files(d.identifier);
+                if (!files.length) return null;
+                const id = ++counter;
+                urlById.set(id, `https://archive.org/download/${d.identifier}/${encodeURI(files[0])}`);
+                return { id, name: String(d.title), image: arImg(d.identifier), ext: 'mp4' } as any;
+              } catch { return null; }
             }));
+            return out.filter(Boolean) as Item[];
           }
 
-          export const getSeriesInfo = async (s: Session, id: number): Promise<SeriesInfo> => ({
-            info: { name: 'تفاصيل المسلسل', cover: 'https://picsum.photos/600/400', plot: 'تفاصيل القصة والحلقات', cast: 'طاقم التمثيل', genre: 'دراما / تشويق', rating: '8.8' },
-            episodes: { '1': [{ id: 101, episode_num: 1, title: 'الحلقة الأولى', container_extension: 'mp4', info: {} }] }
-          });
+          export const getSeriesInfo = async (s: Session, id: number): Promise<SeriesInfo> => {
+            const ident = seriesById.get(id) || '';
+            let files: string[] = [];
+            try { files = await mp4Files(ident); } catch {}
+            return {
+              info: { name: ident, cover: arImg(ident), plot: 'محتوى مجاني ملك عام من Internet Archive', cast: '', genre: 'كلاسيكي', rating: '' },
+              episodes: { '1': files.slice(0, 60).map((n, i) => ({ id: `${ident}/${n}` as any, episode_num: i + 1, title: `الحلقة ${i + 1}`, container_extension: 'mp4', info: {} })) },
+            } as any;
+          };
 
-          export const liveUrl = (s: Session, id: number) => 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
-          export const movieUrl = (s: Session, id: number, ext = 'mp4') => 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
-          export const episodeUrl = (s: Session, id: string, ext = 'mp4') => 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
+          export const liveUrl = (s: Session, id: number) => urlById.get(id) || '';
+          export const movieUrl = (s: Session, id: number, ext = 'mp4') => urlById.get(id) || '';
+          export const episodeUrl = (s: Session, id: string, ext = 'mp4') => `https://archive.org/download/${encodeURI(String(id))}`;
           EOF
           done
 
