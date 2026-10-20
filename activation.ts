@@ -1,8 +1,16 @@
 import { Session } from '../types';
 
 export async function activate(code: string): Promise<Session> {
-  if (!code.trim()) {
+  const trimmedCode = code.trim();
+  
+  if (!trimmedCode) {
     throw new Error('اكتب كود التفعيل');
   }
-  return { server: 'http://demo', username: 'demo', password: 'demo' };
+
+  // إذا تم إدخال كود تفعيل تجريبي أو أي كود، نقوم بتوجيهه للاعتماد على النظام المحلي
+  return { 
+    server: 'http://local-nilesat', 
+    username: trimmedCode, 
+    password: 'password' 
+  };
 }
