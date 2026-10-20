@@ -6,9 +6,6 @@
     "production": {
       "android": {
         "buildType": "apk"
-      },
-      "env": {
-        "NODE_OPTIONS": "--max-old-space-size=4096"
       }
     }
   }
