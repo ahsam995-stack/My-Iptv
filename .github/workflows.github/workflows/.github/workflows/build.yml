@@ -25,7 +25,7 @@ jobs:
             printf "import { Session } from '../types';\n\nexport async function activate(code: string): Promise<Session> {\n  const validCode = '200171';\n  if (code.trim() !== validCode) throw new Error('كود التفعيل غير صحيح، حاول مرة أخرى');\n  return { success: true, serverUrl: 'http://localhost', username: code.trim(), password: 'password' };\n}\n" > "$f"
           done
 
-      - name: Patch xtream (free legal content)
+      - name: Patch xtream (free content + YouTube)
         run: |
           for f in $(find "$GITHUB_WORKSPACE" -name xtream.ts -not -path "*/node_modules/*"); do
           cat > "$f" << 'EOF'
@@ -41,6 +41,28 @@ jobs:
           const seriesById = new Map<number, string>();
           const NOIMG = 'https://placehold.co/400x400/111827/ffffff.png';
           const arImg = (id: string) => `https://archive.org/services/img/${id}`;
+          const ytUrl = (vid: string) => `https://www.youtube.com/watch?v=${vid}`;
+          const ytImg = (vid: string) => `https://img.youtube.com/vi/${vid}/hqdefault.jpg`;
+
+          // ---------- YOUTUBE: عدّل هذي القوائم وضيف فيديوهاتك ----------
+          // vid = الجزء الأخير من رابط اليوتيوب بعد v=
+          const YT_VIDEOS: { title: string; vid: string }[] = [
+            { title: 'Big Buck Bunny', vid: 'aqz-KE-bpKQ' },
+            { title: 'Sintel', vid: 'eRsGyueVLvQ' },
+            { title: 'Tears of Steel', vid: 'R6MlUcmOul8' },
+          ];
+          // بثوث مباشرة (أرقامها ممكن تتغير وبعضها ما يسمح بالتشغيل داخل التطبيق)
+          const YT_LIVE: { title: string; vid: string }[] = [
+            { title: 'الجزيرة', vid: '0zc9dACzJYY' },
+            { title: 'سكاي نيوز عربية', vid: 'DTuF6hCLCGw' },
+            { title: 'العربية', vid: 'h9gGE5QxanU' },
+          ];
+          const ytItems = (list: { title: string; vid: string }[]): Item[] =>
+            list.map((v) => {
+              const id = ++counter;
+              urlById.set(id, ytUrl(v.vid));
+              return { id, name: v.title, image: ytImg(v.vid), ext: 'mp4' } as any;
+            });
 
           // ---------- LIVE: free public channels (with real logos) ----------
           const LIVE_M3U = 'https://iptv-org.github.io/iptv/languages/ara.m3u';
@@ -83,6 +105,7 @@ jobs:
             '11': { name: 'أفلام كلاسيكية (ملك عام)', q: 'collection:feature_films AND mediatype:movies' },
             '12': { name: 'أفلام عربية', q: 'mediatype:movies AND (language:Arabic OR subject:arabic)' },
             '13': { name: 'أفلام كرتون', q: 'collection:animationandcartoons AND mediatype:movies' },
+            '14': { name: 'يوتيوب', q: '' },
           };
           const SERIES_CATS: Record<string, { name: string; q: string }> = {
             '21': { name: 'مسلسلات كلاسيكية', q: 'collection:classic_tv AND mediatype:movies' },
@@ -101,19 +124,24 @@ jobs:
           }
 
           export async function getCategories(s: Session, kind: Kind): Promise<Category[]> {
-            if (kind === 'live') return (await loadLive()).cats;
+            if (kind === 'live') {
+              const l = await loadLive();
+              return [{ category_id: 'L:YT', category_name: 'قنوات يوتيوب' } as any, ...l.cats];
+            }
             const src = kind === 'movie' ? MOVIE_CATS : SERIES_CATS;
             return Object.keys(src).map((id) => ({ category_id: id, category_name: src[id].name }));
           }
 
           export async function getItems(s: Session, kind: Kind, categoryId: string): Promise<Item[]> {
             if (kind === 'live') {
+              if (categoryId === 'L:YT') return ytItems(YT_LIVE);
               const l = await loadLive();
               return l.items[categoryId.replace('L:', '')] || [];
             }
             const src = kind === 'movie' ? MOVIE_CATS : SERIES_CATS;
             const cat = src[categoryId];
             if (!cat) return [];
+            if (kind === 'movie' && categoryId === '14') return ytItems(YT_VIDEOS);
             const docs = await archiveList(cat.q);
             if (kind === 'series') {
               return docs.map((d) => {
@@ -150,41 +178,68 @@ jobs:
           EOF
           done
 
-      - name: Patch player (simple)
+      - name: Patch player (video + YouTube)
         run: |
           for f in $(find "$GITHUB_WORKSPACE" -name PlayerScreen.tsx -not -path "*/node_modules/*"); do
           cat > "$f" << 'EOF'
           import React, { useEffect, useState } from 'react';
-          import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+          import { ActivityIndicator, Dimensions, Pressable, StyleSheet, Text, View } from 'react-native';
           import { useVideoPlayer, VideoView } from 'expo-video';
+          import YoutubePlayer from 'react-native-youtube-iframe';
           import { Ionicons } from '@expo/vector-icons';
           import { colors } from '../theme';
 
-          export default function PlayerScreen({ route, navigation }: any) {
-            const { url, title, live } = route.params;
-            const [status, setStatus] = useState('loading');
+          const ytId = (u: string): string | null => {
+            const m = String(u).match(/(?:v=|youtu\.be\/|embed\/)([\w-]{11})/);
+            return m ? m[1] : null;
+          };
 
+          function Header({ navigation, title, live }: any) {
+            return (
+              <Pressable style={s.back} onPress={() => navigation.goBack()} hitSlop={12}>
+                <Ionicons name="arrow-back" size={26} color="#fff" />
+                <Text style={s.title} numberOfLines={1}>{title}{live ? '  •  مباشر' : ''}</Text>
+              </Pressable>
+            );
+          }
+
+          function YouTubeScreen({ vid, navigation, title, live }: any) {
+            const w = Dimensions.get('window').width;
+            return (
+              <View style={s.wrap}>
+                <View style={{ flex: 1, justifyContent: 'center' }}>
+                  <YoutubePlayer height={Math.round((w * 9) / 16)} width={w} videoId={vid} play={true} />
+                </View>
+                <Header navigation={navigation} title={title} live={live} />
+              </View>
+            );
+          }
+
+          function VideoScreen({ url, navigation, title, live }: any) {
+            const [status, setStatus] = useState('loading');
             const player = useVideoPlayer(url, (p) => {
               p.loop = false;
               p.play();
             });
-
             useEffect(() => {
               const sub = player.addListener('statusChange', (e: any) => setStatus(e.status));
               return () => sub.remove();
             }, [player]);
-
             return (
               <View style={s.wrap}>
                 <VideoView player={player} style={s.video} nativeControls contentFit="contain" />
-                <Pressable style={s.back} onPress={() => navigation.goBack()} hitSlop={12}>
-                  <Ionicons name="arrow-back" size={26} color="#fff" />
-                  <Text style={s.title} numberOfLines={1}>{title}{live ? '  •  مباشر' : ''}</Text>
-                </Pressable>
+                <Header navigation={navigation} title={title} live={live} />
                 {status === 'loading' && <ActivityIndicator style={StyleSheet.absoluteFill} size="large" color={colors.primary} />}
                 {status === 'error' && <Text style={s.err}>تعذّر تشغيل هذا المحتوى</Text>}
               </View>
             );
+          }
+
+          export default function PlayerScreen({ route, navigation }: any) {
+            const { url, title, live } = route.params;
+            const vid = ytId(url);
+            if (vid) return <YouTubeScreen vid={vid} navigation={navigation} title={title} live={live} />;
+            return <VideoScreen url={url} navigation={navigation} title={title} live={live} />;
           }
 
           const s = StyleSheet.create({
@@ -193,6 +248,80 @@ jobs:
             back: { position: 'absolute', top: 40, left: 16, right: 16, flexDirection: 'row', alignItems: 'center', gap: 10 },
             title: { color: '#fff', fontSize: 16, fontWeight: '700', flex: 1 },
             err: { position: 'absolute', alignSelf: 'center', top: '45%', color: colors.danger, fontSize: 16 },
+          });
+          EOF
+          done
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Fix package.json versions
+        run: |
+          rm -rf node_modules package-lock.json android
+          node -e "
+          const fs = require('fs');
+          const p = JSON.parse(fs.readFileSync('package.json','utf8'));
+          p.dependencies = Object.assign({}, p.dependencies, {
+            'expo': '~51.0.39',
+            'expo-video': '~1.2.7',
+            'expo-modules-core': '~1.12.26',
+            'expo-font': '~12.0.10',
+            'react-native-safe-area-context': '4.10.5',
+            'react-native-screens': '~3.31.1',
+            '@react-navigation/native': '^6.1.18',
+            '@react-navigation/native-stack': '^6.11.0',
+            '@react-navigation/bottom-tabs': '^6.6.1',
+            '@react-native-async-storage/async-storage': '1.23.1',
+            'expo-secure-store': '~13.0.2',
+            'react-native-webview': '13.8.6',
+            'react-native-youtube-iframe': '^2.3.0'
+          });
+          p.overrides = Object.assign({}, p.overrides, {
+            'expo-modules-core': '~1.12.26',
+            'expo-font': '~12.0.10'
+          });
+          fs.writeFileSync('package.json', JSON.stringify(p, null, 2));
+          "
+
+      - name: Install Dependencies
+        run: |
+          npm install
+          npx expo install --fix
+
+      - name: Auto-install missing libraries
+        run: |
+          for i in 1 2 3 4 5; do
+            OUT=$(npx expo export --platform android 2>&1 || true)
+            MISSING=$(echo "$OUT" | grep -oP "Unable to resolve module \K[^ ]+" | head -1)
+            if [ -z "$MISSING" ]; then break; fi
+            echo "Installing missing: $MISSING"
+            npx expo install "$MISSING" || npm install "$MISSING"
+          done
+
+      - name: Build Local APK
+        run: |
+          npx expo prebuild --platform android --clean
+          mkdir -p android/app/src/main/res/values
+          if ! grep -rq "splashscreen_background" android/app/src/main/res/values/; then
+            printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="splashscreen_background">#000000</color>\n</resources>\n' > android/app/src/main/res/values/splash_fix.xml
+          fi
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: android/app/build/outputs/apk/release/*.apk colors.danger, fontSize: 16 },
           });
           EOF
           done
