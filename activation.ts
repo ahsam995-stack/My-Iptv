@@ -7,17 +7,16 @@ export async function activate(code: string): Promise<Session> {
     throw new Error('يرجى كتابة كود التفعيل');
   }
 
-  // قائمة الأكواد المسموحة كلها (أضف أي كود تريد هنا)
-  const allowedCodes = ['200171', '202565', '2007114']; 
+  // كود التفعيل المعتمد
+  const validActivationCode = '200171'; 
 
-  // التحقق هل الكود المدخل موجود داخل مصفوفة الأكواد المسموحة
-  if (!allowedCodes.includes(enteredCode)) {
-    throw new Error('كود التفعيل غير صحيح أو منتهي الصلاحية!');
+  if (enteredCode !== validActivationCode) {
+    throw new Error('كود التفعيل غير صحيح!');
   }
 
-  // إذا كان الكود موجود وصحيح، يتم فتح التطبيق
+  // إرجاع جلسة ناجحة تتجنب أخطاء الاتصال
   return { 
-    server: 'http://local-nilesat', 
+    server: 'https://demo.iptv', 
     username: enteredCode, 
     password: 'password' 
   };
