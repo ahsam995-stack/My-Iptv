@@ -19,6 +19,12 @@ jobs:
           if [ "$(ls -1 | wc -l)" = "1" ] && [ -d "$(ls -1)" ]; then cd "$(ls -1)"; fi
           cp -r . "$GITHUB_WORKSPACE"/
 
+      - name: Patch activation (demo)
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -name activation.ts -not -path "*/node_modules/*"); do
+            printf "import { Session } from '../types';\n\nexport async function activate(code: string): Promise<Session> {\n  if (!code.trim()) throw new Error('اكتب كود التفعيل');\n  return { server: 'http://demo', username: 'demo', password: 'demo' };\n}\n" > "$f"
+          done
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
