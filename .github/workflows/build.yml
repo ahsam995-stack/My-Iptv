@@ -40,7 +40,11 @@ jobs:
           p.dependencies['expo'] = '~51.0.39';
           p.dependencies['expo-video'] = '~1.2.7';
           p.dependencies['expo-modules-core'] = '~1.12.26';
-          p.overrides = Object.assign({}, p.overrides, {'expo-modules-core': '~1.12.26'});
+          p.dependencies['expo-font'] = '~12.0.10';
+          p.overrides = Object.assign({}, p.overrides, {
+            'expo-modules-core': '~1.12.26',
+            'expo-font': '~12.0.10'
+          });
           fs.writeFileSync('package.json', JSON.stringify(p, null, 2));
           "
 
