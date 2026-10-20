@@ -1,7 +1,6 @@
 import { Category, Item, Kind, Session, SeriesInfo } from '../types';
 
 export async function authenticate(s: Session) {
-  // تفعيل وهمي ناجح للفحص
   return { status: 'Active', exp_date: '2027-01-01', max_connections: '5', username: s.username };
 }
 
@@ -30,12 +29,6 @@ export async function getItems(s: Session, kind: Kind, categoryId: string): Prom
         name: 'فيديو تجريبي 1 (Big Buck Bunny)',
         image: 'https://via.placeholder.com/150',
         ext: 'mp4',
-      },
-      {
-        id: 202,
-        name: 'فيديو تجريبي 2 (Tears of Steel)',
-        image: 'https://via.placeholder.com/150',
-        ext: 'mp4',
       }
     ];
   }
@@ -44,12 +37,6 @@ export async function getItems(s: Session, kind: Kind, categoryId: string): Prom
 
 export const getSeriesInfo = async (s: Session, id: number): Promise<SeriesInfo> => ({} as any);
 
-// ---- روابط التشغيل التجريبية الحقيقية ----
 export const liveUrl = (s: Session, id: number) => 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8';
-export const movieUrl = (s: Session, id: number, ext = 'mp4') => {
-  if (id === 202) {
-    return 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/TearsOfSteel.mp4';
-  }
-  return 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
-};
+export const movieUrl = (s: Session, id: number, ext = 'mp4') => 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
 export const episodeUrl = (s: Session, id: string, ext = 'mp4') => 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4';
