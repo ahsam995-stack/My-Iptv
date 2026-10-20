@@ -74,6 +74,53 @@ jobs:
           EOF
           done
 
+      - name: Patch player (simple)
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -name PlayerScreen.tsx -not -path "*/node_modules/*"); do
+          cat > "$f" << 'EOF'
+          import React, { useEffect, useState } from 'react';
+          import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+          import { useVideoPlayer, VideoView } from 'expo-video';
+          import { Ionicons } from '@expo/vector-icons';
+          import { colors } from '../theme';
+
+          export default function PlayerScreen({ route, navigation }: any) {
+            const { url, title, live } = route.params;
+            const [status, setStatus] = useState('loading');
+
+            const player = useVideoPlayer(url, (p) => {
+              p.loop = false;
+              p.play();
+            });
+
+            useEffect(() => {
+              const sub = player.addListener('statusChange', (e: any) => setStatus(e.status));
+              return () => sub.remove();
+            }, [player]);
+
+            return (
+              <View style={s.wrap}>
+                <VideoView player={player} style={s.video} nativeControls contentFit="contain" />
+                <Pressable style={s.back} onPress={() => navigation.goBack()} hitSlop={12}>
+                  <Ionicons name="arrow-back" size={26} color="#fff" />
+                  <Text style={s.title} numberOfLines={1}>{title}{live ? '  •  مباشر' : ''}</Text>
+                </Pressable>
+                {status === 'loading' && <ActivityIndicator style={StyleSheet.absoluteFill} size="large" color={colors.primary} />}
+                {status === 'error' && <Text style={s.err}>تعذّر تشغيل هذا المحتوى</Text>}
+              </View>
+            );
+          }
+
+          const s = StyleSheet.create({
+            wrap: { flex: 1, backgroundColor: '#000' },
+            video: { flex: 1 },
+            back: { position: 'absolute', top: 40, left: 16, right: 16, flexDirection: 'row', alignItems: 'center', gap: 10 },
+            title: { color: '#fff', fontSize: 16, fontWeight: '700', flex: 1 },
+            err: { position: 'absolute', alignSelf: 'center', top: '45%', color: colors.danger, fontSize: 16 },
+          });
+          EOF
+          done
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
