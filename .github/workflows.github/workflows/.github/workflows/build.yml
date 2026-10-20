@@ -18,7 +18,6 @@ jobs:
           cd /tmp/z
           if [ "$(ls -1 | wc -l)" = "1" ] && [ -d "$(ls -1)" ]; then cd "$(ls -1)"; fi
           cp -r . "$GITHUB_WORKSPACE"/
-          ls -R "$GITHUB_WORKSPACE/src" | head -30
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -31,15 +30,35 @@ jobs:
           distribution: 'zulu'
           java-version: '17'
 
+      - name: Fix package.json versions
+        run: |
+          rm -rf node_modules package-lock.json android
+          node -e "
+          const fs = require('fs');
+          const p = JSON.parse(fs.readFileSync('package.json','utf8'));
+          p.dependencies = p.dependencies || {};
+          p.dependencies['expo'] = '~51.0.39';
+          p.dependencies['expo-video'] = '~1.2.7';
+          p.dependencies['expo-modules-core'] = '~1.12.26';
+          p.dependencies['expo-font'] = '~12.0.10';
+          p.overrides = Object.assign({}, p.overrides, {
+            'expo-modules-core': '~1.12.26',
+            'expo-font': '~12.0.10'
+          });
+          fs.writeFileSync('package.json', JSON.stringify(p, null, 2));
+          "
+
       - name: Install Dependencies
-        run: npm install
+        run: |
+          npm install
+          npx expo install --fix
 
       - name: Build Local APK
         run: |
-          npx expo prebuild --platform android
+          npx expo prebuild --platform android --clean
           cd android
           chmod +x gradlew
-          ./gradlew assembleRelease
+          ./gradlew assembleRelease --no-daemon
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
