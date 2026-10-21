@@ -714,7 +714,6 @@ jobs:
           grep -rn 'name="Vip"' "$GITHUB_WORKSPACE" --include=RootNavigator.tsx | cut -c1-120
 
       - name: Update VIP screen images
-        if: false
         run: |
           for f in $(find "$GITHUB_WORKSPACE" -path "*/src/navigation/RootNavigator.tsx" -not -path "*/node_modules/*"); do
           d="$(dirname "$f")/../screens"
