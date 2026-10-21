@@ -46,7 +46,7 @@ jobs:
 
           // ---------- YOUTUBE: عدّل هذي القوائم وضيف فيديوهاتك ----------
           // vid = الجزء الأخير من رابط اليوتيوب بعد v=
-                    const YT_VIDEOS: { title: string; vid: string }[] = [
+          const YT_VIDEOS: { title: string; vid: string }[] = [
             { title: 'Big Buck Bunny', vid: 'aqz-KE-bpKQ' },
             { title: 'Sintel', vid: 'eRsGyueVLvQ' },
             { title: 'Tears of Steel', vid: 'R6MlUcmOul8' },
@@ -249,6 +249,192 @@ jobs:
             back: { position: 'absolute', top: 40, left: 16, right: 16, flexDirection: 'row', alignItems: 'center', gap: 10 },
             title: { color: '#fff', fontSize: 16, fontWeight: '700', flex: 1 },
             err: { position: 'absolute', alignSelf: 'center', top: '45%', color: colors.danger, fontSize: 16 },
+          });
+          EOF
+          done
+
+      - name: Patch browse screen (sections grid)
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -name BrowseScreen.tsx -not -path "*/node_modules/*"); do
+          cat > "$f" << 'EOF'
+          import React, { useEffect, useMemo, useState } from 'react';
+          import { ActivityIndicator, BackHandler, FlatList, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+          import { SafeAreaView } from 'react-native-safe-area-context';
+          import { useNavigation } from '@react-navigation/native';
+          import { Ionicons } from '@expo/vector-icons';
+          import { useAuth } from '../store/auth';
+          import { Category, Item, Kind } from '../types';
+          import * as api from '../api/xtream';
+          import CategoryChips from '../components/CategoryChips';
+          import { colors } from '../theme';
+
+          const COLS = 3;
+
+          const catIcon = (name: string): any => {
+            if (name.includes('يوتيوب')) return 'logo-youtube';
+            if (name.includes('أخبار')) return 'newspaper';
+            if (name.includes('رياضة')) return 'football';
+            if (name.includes('أطفال')) return 'happy';
+            if (name.includes('أفلام')) return 'film';
+            if (name.includes('موسيقى')) return 'musical-notes';
+            if (name.includes('دينية')) return 'moon';
+            if (name.includes('وثائقية')) return 'earth';
+            if (name.includes('مسلسلات')) return 'videocam';
+            if (name.includes('ثقافة')) return 'book';
+            if (name.includes('ترفيه') || name.includes('منوعات')) return 'sparkles';
+            return 'tv';
+          };
+
+          export default function BrowseScreen({ kind }: { kind: Kind }) {
+            const { session } = useAuth();
+            const nav = useNavigation<any>();
+            const isLive = kind === 'live';
+            const [cats, setCats] = useState<Category[]>([]);
+            const [cat, setCat] = useState<string | null>(null);
+            const [opened, setOpened] = useState(!isLive);
+            const [items, setItems] = useState<Item[]>([]);
+            const [q, setQ] = useState('');
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState('');
+
+            useEffect(() => {
+              api.getCategories(session!, kind)
+                .then((c) => {
+                  setCats(c);
+                  if (isLive) setLoading(false);
+                  else { setCat(c[0]?.category_id ?? null); if (!c.length) setLoading(false); }
+                })
+                .catch((e) => { setError(e.message); setLoading(false); });
+            }, [kind]);
+
+            useEffect(() => {
+              if (cat === null || !opened) return;
+              setLoading(true);
+              setError('');
+              api.getItems(session!, kind, cat)
+                .then(setItems)
+                .catch((e) => setError(e.message))
+                .finally(() => setLoading(false));
+            }, [cat, opened]);
+
+            const goBack = () => {
+              setOpened(false);
+              setCat(null);
+              setItems([]);
+              setQ('');
+              setError('');
+              setLoading(false);
+            };
+
+            useEffect(() => {
+              if (!isLive || !opened) return;
+              const sub = BackHandler.addEventListener('hardwareBackPress', () => { goBack(); return true; });
+              return () => sub.remove();
+            }, [isLive, opened]);
+
+            const data = useMemo(() => {
+              const t = q.trim().toLowerCase();
+              return t ? items.filter((i) => i.name.toLowerCase().includes(t)) : items;
+            }, [items, q]);
+
+            const open = (it: Item) => {
+              if (kind === 'series') return nav.navigate('SeriesDetail', { id: it.id, name: it.name });
+              const url = kind === 'live' ? api.liveUrl(session!, it.id) : api.movieUrl(session!, it.id, it.ext || 'mp4');
+              nav.navigate('Player', { url, title: it.name, live: kind === 'live' });
+            };
+
+            // ---------- Live: grid of sections ----------
+            if (isLive && !opened) {
+              return (
+                <SafeAreaView style={s.wrap} edges={['top']}>
+                  <Text style={s.head}>القنوات</Text>
+                  {loading ? (
+                    <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
+                  ) : error ? (
+                    <Text style={s.error}>{error}</Text>
+                  ) : (
+                    <FlatList
+                      key="cats"
+                      data={cats}
+                      numColumns={2}
+                      keyExtractor={(c) => c.category_id}
+                      contentContainerStyle={{ padding: 12, gap: 12 }}
+                      columnWrapperStyle={{ gap: 12 }}
+                      renderItem={({ item }) => (
+                        <Pressable style={s.catCard} onPress={() => { setCat(item.category_id); setOpened(true); }}>
+                          <Ionicons name={catIcon(item.category_name)} size={38} color={colors.primary} />
+                          <Text style={s.catText} numberOfLines={2}>{item.category_name}</Text>
+                        </Pressable>
+                      )}
+                      ListEmptyComponent={<Text style={s.error}>لا توجد أقسام</Text>}
+                    />
+                  )}
+                </SafeAreaView>
+              );
+            }
+
+            const catName = cats.find((c) => c.category_id === cat)?.category_name || '';
+            return (
+              <SafeAreaView style={s.wrap} edges={['top']}>
+                {isLive ? (
+                  <Pressable style={s.topBar} onPress={goBack} hitSlop={10}>
+                    <Ionicons name="arrow-back" size={24} color={colors.text} />
+                    <Text style={s.head2}>{catName}</Text>
+                  </Pressable>
+                ) : null}
+                <TextInput style={s.search} value={q} onChangeText={setQ} placeholder="بحث..." placeholderTextColor={colors.muted} />
+                {!isLive ? <CategoryChips data={cats} selected={cat} onSelect={setCat} /> : null}
+                {loading ? (
+                  <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
+                ) : error ? (
+                  <Text style={s.error}>{error}</Text>
+                ) : (
+                  <FlatList
+                    key={isLive ? 'list' : 'grid'}
+                    data={data}
+                    numColumns={isLive ? 1 : COLS}
+                    keyExtractor={(i) => String(i.id)}
+                    initialNumToRender={12}
+                    maxToRenderPerBatch={12}
+                    windowSize={7}
+                    removeClippedSubviews
+                    contentContainerStyle={{ padding: 12, gap: 10 }}
+                    columnWrapperStyle={isLive ? undefined : { gap: 10 }}
+                    renderItem={({ item }) =>
+                      isLive ? (
+                        <Pressable style={s.row} onPress={() => open(item)}>
+                          {item.image ? <Image source={{ uri: item.image }} style={s.logo} resizeMode="contain" /> : <View style={s.logo} />}
+                          <Text style={s.rowText} numberOfLines={1}>{item.name}</Text>
+                        </Pressable>
+                      ) : (
+                        <Pressable style={s.card} onPress={() => open(item)}>
+                          {item.image ? <Image source={{ uri: item.image }} style={s.poster} /> : <View style={s.poster} />}
+                          <Text style={s.cardText} numberOfLines={2}>{item.name}</Text>
+                        </Pressable>
+                      )
+                    }
+                    ListEmptyComponent={<Text style={s.error}>لا توجد نتائج</Text>}
+                  />
+                )}
+              </SafeAreaView>
+            );
+          }
+
+          const s = StyleSheet.create({
+            wrap: { flex: 1, backgroundColor: colors.bg },
+            head: { color: colors.text, fontSize: 22, fontWeight: '800', margin: 16, marginBottom: 4 },
+            topBar: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 10 },
+            head2: { color: colors.text, fontSize: 18, fontWeight: '700', flex: 1 },
+            catCard: { flex: 1, backgroundColor: colors.card, borderRadius: 16, borderWidth: 1, borderColor: colors.border, paddingVertical: 26, alignItems: 'center', justifyContent: 'center', gap: 10 },
+            catText: { color: colors.text, fontSize: 15, fontWeight: '700', textAlign: 'center', paddingHorizontal: 8 },
+            search: { backgroundColor: colors.card, color: colors.text, margin: 12, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, borderWidth: 1, borderColor: colors.border },
+            error: { color: colors.muted, textAlign: 'center', marginTop: 40 },
+            row: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.card, borderRadius: 12, padding: 10, gap: 12 },
+            logo: { width: 48, height: 48, borderRadius: 8, backgroundColor: colors.border },
+            rowText: { color: colors.text, fontSize: 15, flex: 1 },
+            card: { flex: 1 / COLS },
+            poster: { aspectRatio: 2 / 3, borderRadius: 10, backgroundColor: colors.border },
+            cardText: { color: colors.text, fontSize: 12, marginTop: 6 },
           });
           EOF
           done
