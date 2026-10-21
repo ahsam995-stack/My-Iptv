@@ -460,7 +460,7 @@ jobs:
           
       - name: Patch navigator + VIP screen
         run: |
-         BROWSE=$(find "$GITHUB_WORKSPACE" -name BrowseScreen.tsx -not -path "*/node_modules/*" | head -n 1)
+          BROWSE=$(find "$GITHUB_WORKSPACE" -name BrowseScreen.tsx -not -path "*/node_modules/*" | head -n 1)
           if [ -z "$BROWSE" ]; then echo "ERROR: screens folder not found"; exit 1; fi
           SCREENS_DIR="$(dirname "$BROWSE")"
           cat > "$SCREENS_DIR/VipScreen.tsx" << 'EOF'
@@ -714,6 +714,7 @@ jobs:
           grep -rn 'name="Vip"' "$GITHUB_WORKSPACE" --include=RootNavigator.tsx | cut -c1-120
 
       - name: Update VIP screen images
+        if: false
         run: |
           for f in $(find "$GITHUB_WORKSPACE" -path "*/src/navigation/RootNavigator.tsx" -not -path "*/node_modules/*"); do
           d="$(dirname "$f")/../screens"
