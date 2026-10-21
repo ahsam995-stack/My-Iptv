@@ -457,142 +457,126 @@ jobs:
           });
           EOF
           done
-
-
+          
       - name: Patch navigator + VIP screen
         run: |
-          BROWSE=$(find "$GITHUB_WORKSPACE" -name BrowseScreen.tsx -not -path "*/node_modules/*" | head -n 1)
+         BROWSE=$(find "$GITHUB_WORKSPACE" -name BrowseScreen.tsx -not -path "*/node_modules/*" | head -n 1)
           if [ -z "$BROWSE" ]; then echo "ERROR: screens folder not found"; exit 1; fi
           SCREENS_DIR="$(dirname "$BROWSE")"
           cat > "$SCREENS_DIR/VipScreen.tsx" << 'EOF'
           import React, { useEffect, useState } from 'react';
-          import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+          import { ActivityIndicator, FlatList, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
           import { SafeAreaView } from 'react-native-safe-area-context';
           import { Ionicons } from '@expo/vector-icons';
+          import { useNavigation } from '@react-navigation/native';
           import { colors } from '../theme';
 
-          type Card = { name: string; q: string; lang?: string; img?: string };
-          type Section = { title: string; icon: any; color: string; logo: boolean; items: Card[] };
-
-          const SECTIONS: Section[] = [
-            {
-              title: 'قنوات رياضية', icon: 'football', color: '#30a46c', logo: true,
-              items: [
-                { name: 'beIN Sports 1', q: 'beIN Sports' },
-                { name: 'beIN Sports 2', q: 'beIN Sports' },
-                { name: 'beIN Sports 3', q: 'beIN Sports' },
-                { name: 'beIN Sports 4', q: 'beIN Sports' },
-                { name: 'beIN Sports 5', q: 'beIN Sports' },
-                { name: 'SSC Sport 1', q: 'Saudi Sports Company' },
-                { name: 'SSC Sport 2', q: 'Saudi Sports Company' },
-                { name: 'AD Sports 1', q: 'Abu Dhabi Sports Channel' },
-                { name: 'Dubai Sports 1', q: 'Dubai Sports Channel' },
-              ],
-            },
-            {
-              title: 'أفلام أجنبية', icon: 'film', color: '#e5484d', logo: false,
-              items: [
-                { name: 'Avatar', q: 'Avatar 2009 film' },
-                { name: 'The Dark Knight', q: 'The Dark Knight film' },
-                { name: 'Inception', q: 'Inception film' },
-                { name: 'Interstellar', q: 'Interstellar film' },
-                { name: 'Gladiator', q: 'Gladiator 2000 film' },
-                { name: 'John Wick', q: 'John Wick film' },
-                { name: 'Mad Max Fury Road', q: 'Mad Max Fury Road' },
-                { name: 'Fast X', q: 'Fast X' },
-                { name: 'Extraction', q: 'Extraction 2020 film' },
-              ],
-            },
-            {
-              title: 'مسلسلات مشهورة', icon: 'videocam', color: '#0091ff', logo: false,
-              items: [
-                { name: 'Breaking Bad', q: 'Breaking Bad' },
-                { name: 'Game of Thrones', q: 'Game of Thrones' },
-                { name: 'Stranger Things', q: 'Stranger Things' },
-                { name: 'Peaky Blinders', q: 'Peaky Blinders TV series' },
-                { name: 'Money Heist', q: 'Money Heist' },
-                { name: 'Squid Game', q: 'Squid Game' },
-                { name: 'Vikings', q: 'Vikings TV series' },
-                { name: 'الحشاشين', q: 'الحشاشين مسلسل', lang: 'ar' },
-                { name: 'العتاولة', q: 'العتاولة مسلسل', lang: 'ar' },
-              ],
-            },
-          ];
-
-          async function wikiImg(q: string, lang = 'en'): Promise<string | null> {
-            try {
-              const u = `https://${lang}.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(q)}&gsrlimit=1&prop=pageimages&piprop=thumbnail&pithumbsize=300&format=json&origin=*`;
-              const j = await (await fetch(u)).json();
-              const pages = j && j.query && j.query.pages;
-              if (!pages) return null;
-              const p: any = Object.values(pages)[0];
-              return (p && p.thumbnail && p.thumbnail.source) || null;
-            } catch {
-              return null;
-            }
-          }
+          type Item = { id: number; name: string; image: string; url: string };
 
           export default function VipScreen() {
-            const [imgs, setImgs] = useState<Record<string, string>>({});
+            const nav = useNavigation<any>();
+            const [loading, setLoading] = useState(false);
+            const [items, setItems] = useState<Item[]>([]);
+            const [query, setQuery] = useState('');
+
+            const searchContent = async (searchKeyword = '') => {
+              setLoading(true);
+              try {
+                const q = searchKeyword.trim() 
+                  ? `(${encodeURIComponent(searchKeyword)}) AND mediatype:movies` 
+                  : 'collection:classic_tv AND mediatype:movies';
+                
+                const res = await fetch(`https://archive.org/advancedsearch.php?q=${q}&fl%5B%5D=identifier&fl%5B%5D=title&sort%5B%5D=downloads+desc&rows=24&output=json`);
+                const data = await res.json();
+                const docs = data.response?.docs || [];
+                const loaded: Item[] = [];
+                let idCounter = 6000;
+
+                for (const doc of docs) {
+                  try {
+                    const metaRes = await fetch(`https://archive.org/metadata/${doc.identifier}`);
+                    const metaJson = await metaRes.json();
+                    const files = (metaJson.files || []).filter((f: any) => /\.mp4$/i.test(f.name));
+                    if (files.length > 0) {
+                      const videoUrl = `https://archive.org/download/${doc.identifier}/${encodeURI(files[0].name)}`;
+                      const posterUrl = `https://archive.org/services/img/${doc.identifier}`;
+                      loaded.push({
+                        id: idCounter++,
+                        name: String(doc.title || 'محتوى حصري'),
+                        image: posterUrl,
+                        url: videoUrl,
+                      });
+                    }
+                  } catch {}
+                }
+                setItems(loaded);
+              } catch {}
+              setLoading(false);
+            };
 
             useEffect(() => {
-              let alive = true;
-              SECTIONS.forEach((sec) =>
-                sec.items.forEach((it) => {
-                  if (it.img) return;
-                  wikiImg(it.q, it.lang).then((u) => {
-                    if (alive && u) setImgs((m) => ({ ...m, [it.name]: u }));
-                  });
-                })
-              );
-              return () => { alive = false; };
+              searchContent('');
             }, []);
 
-            const soon = (name: string) => Alert.alert(name, 'هذا المحتوى غير متوفر حالياً');
+            const openPlayer = (item: Item) => {
+              nav.navigate('Player', { url: item.url, title: item.name, live: false });
+            };
+
             return (
               <SafeAreaView style={s.wrap} edges={['top']}>
-                <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 30 }}>
-                  <View style={s.headRow}>
-                    <Ionicons name="star" size={22} color="#f5a524" />
-                    <Text style={s.head}>VIP</Text>
-                  </View>
-                  {SECTIONS.map((sec) => (
-                    <View key={sec.title} style={{ marginBottom: 18 }}>
-                      <Text style={s.secTitle}>{sec.title}</Text>
-                      <View style={s.grid}>
-                        {sec.items.map((it) => {
-                          const uri = it.img || imgs[it.name];
-                          return (
-                            <Pressable key={it.name} style={s.card} onPress={() => soon(it.name)}>
-                              <View style={[s.pic, { backgroundColor: sec.logo ? '#ffffff' : sec.color + '22' }]}>
-                                {uri ? (
-                                  <Image source={{ uri }} style={s.img} resizeMode={sec.logo ? 'contain' : 'cover'} />
-                                ) : (
-                                  <Ionicons name={sec.icon} size={34} color={sec.color} />
-                                )}
-                              </View>
-                              <Text style={s.name} numberOfLines={2}>{it.name}</Text>
-                            </Pressable>
-                          );
-                        })}
-                      </View>
-                    </View>
-                  ))}
-                </ScrollView>
+                <View style={s.headRow}>
+                  <Ionicons name="star" size={22} color="#f5a524" />
+                  <Text style={s.head}>مكتبة VIP والبحث</Text>
+                </View>
+
+                <View style={s.searchRow}>
+                  <TextInput
+                    style={s.input}
+                    placeholder="ابحث عن أي فيلم أو مسلسل..."
+                    placeholderTextColor={colors.muted}
+                    value={query}
+                    onChangeText={setQuery}
+                    onSubmitEditing={() => searchContent(query)}
+                    returnKeyType="search"
+                  />
+                  <Pressable style={s.searchBtn} onPress={() => searchContent(query)}>
+                    <Ionicons name="search" size={20} color="#fff" />
+                  </Pressable>
+                </View>
+
+                {loading ? (
+                  <ActivityIndicator color={colors.primary} style={{ marginTop: 50 }} size="large" />
+                ) : (
+                  <FlatList
+                    data={items}
+                    numColumns={3}
+                    keyExtractor={(i) => String(i.id)}
+                    contentContainerStyle={{ padding: 10, gap: 10 }}
+                    columnWrapperStyle={{ gap: 10 }}
+                    renderItem={({ item }) => (
+                      <Pressable style={s.card} onPress={() => openPlayer(item)}>
+                        <Image source={{ uri: item.image }} style={s.poster} />
+                        <Text style={s.name} numberOfLines={2}>{item.name}</Text>
+                      </Pressable>
+                    )}
+                    ListEmptyComponent={<Text style={s.empty}>لا توجد نتائج مطابقة لبحثك</Text>}
+                  />
+                )}
               </SafeAreaView>
             );
           }
 
           const s = StyleSheet.create({
             wrap: { flex: 1, backgroundColor: colors.bg },
-            headRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, marginHorizontal: 4 },
-            head: { color: colors.text, fontSize: 22, fontWeight: '800' },
-            secTitle: { color: colors.text, fontSize: 16, fontWeight: '700', marginBottom: 10, marginHorizontal: 4 },
-            grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-            card: { width: '31%' },
-            pic: { aspectRatio: 1, borderRadius: 14, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
-            img: { width: '100%', height: '100%' },
+            headRow: { flexDirection: 'row', alignItems: 'center', gap: 8, margin: 16, marginBottom: 8 },
+            head: { color: colors.text, fontSize: 20, fontWeight: '800' },
+            searchRow: { flexDirection: 'row', paddingHorizontal: 12, marginBottom: 10, gap: 8 },
+            input: { flex: 1, backgroundColor: colors.card, color: colors.text, borderRadius: 10, paddingHorizontal: 14, height: 42, borderWidth: 1, borderColor: colors.border },
+            searchBtn: { backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 14, borderRadius: 10 },
+            card: { flex: 1 / 3 },
+            poster: { aspectRatio: 2 / 3, borderRadius: 10, backgroundColor: colors.border },
             name: { color: colors.text, fontSize: 12, marginTop: 6, textAlign: 'center' },
+            empty: { color: colors.muted, textAlign: 'center', marginTop: 40, fontSize: 14 }
           });
           EOF
           for f in $(find "$GITHUB_WORKSPACE" -name RootNavigator.tsx -not -path "*/node_modules/*"); do
