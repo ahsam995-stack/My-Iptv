@@ -684,7 +684,10 @@ jobs:
             if [ -z "$MISSING" ]; then break; fi
             echo "Installing missing: $MISSING"
             npx expo install "$MISSING" || npm install "$MISSING"
-          done
+          done 
+
+         - name: Clear Metro Cache & Fix
+           run: npx expo export --platform android --clear
 
       - name: Build Local APK
         run: |
