@@ -659,6 +659,22 @@ jobs:
           EOF
           done
 
+      - name: Sync VIP files to all copies
+        run: |
+          VIP=$(find "$GITHUB_WORKSPACE" -name VipScreen.tsx -not -path "*/node_modules/*" | head -n 1)
+          if [ -z "$VIP" ]; then echo "ERROR: VipScreen.tsx not found"; exit 1; fi
+          NAV="$(dirname "$VIP")/../navigation/RootNavigator.tsx"
+          echo "Patched copy: $VIP"
+          for T in $(find "$GITHUB_WORKSPACE" -name RootNavigator.tsx -not -path "*/node_modules/*"); do
+            D="$(dirname "$T")/../screens"
+            if [ "$(realpath "$T")" != "$(realpath "$NAV")" ]; then
+              cp "$NAV" "$T"
+              cp "$VIP" "$D/VipScreen.tsx"
+              echo "Synced: $T"
+            fi
+          done
+          grep -rn 'name="Vip"' "$GITHUB_WORKSPACE" --include=RootNavigator.tsx | cut -c1-120
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
