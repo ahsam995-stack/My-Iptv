@@ -728,6 +728,169 @@ jobs:
           EOF
           done
           grep -rn 'name="Vip"' "$GITHUB_WORKSPACE" --include=RootNavigator.tsx | cut -c1-120
+
+      - name: Update VIP screen images
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -path "*/src/navigation/RootNavigator.tsx" -not -path "*/node_modules/*"); do
+          d="$(dirname "$f")/../screens"
+          echo "VIP screen -> $d"
+          cat > "$d/VipScreen.tsx" << 'EOF'
+          import React, { useEffect, useState } from 'react';
+          import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+          import { SafeAreaView } from 'react-native-safe-area-context';
+          import { Ionicons } from '@expo/vector-icons';
+          import { colors } from '../theme';
+
+          // kind: movie / tv / app (شعار القناة من أيقونة تطبيقها) / wiki (ويكيبيديا فقط)
+          type Kind = 'movie' | 'tv' | 'app' | 'wiki';
+          type Card = { name: string; kind: Kind; term: string; match?: string; wiki?: string; lang?: string };
+          type Section = { title: string; icon: any; color: string; items: Card[] };
+
+          const SECTIONS: Section[] = [
+            {
+              title: 'قنوات رياضية', icon: 'football', color: '#30a46c',
+              items: [
+                { name: 'beIN Sports 1', kind: 'app', term: 'beIN CONNECT', match: 'bein', wiki: 'beIN Sports' },
+                { name: 'beIN Sports 2', kind: 'app', term: 'beIN CONNECT', match: 'bein', wiki: 'beIN Sports' },
+                { name: 'beIN Sports 3', kind: 'app', term: 'beIN CONNECT', match: 'bein', wiki: 'beIN Sports' },
+                { name: 'beIN Sports 4', kind: 'app', term: 'beIN CONNECT', match: 'bein', wiki: 'beIN Sports' },
+                { name: 'beIN Sports 5', kind: 'app', term: 'beIN CONNECT', match: 'bein', wiki: 'beIN Sports' },
+                { name: 'SSC Sport 1', kind: 'app', term: 'SSC Sport', match: 'ssc', wiki: 'Saudi Sports Company' },
+                { name: 'SSC Sport 2', kind: 'app', term: 'SSC Sport', match: 'ssc', wiki: 'Saudi Sports Company' },
+                { name: 'AD Sports 1', kind: 'app', term: 'AD Sports', match: 'ad sports', wiki: 'Abu Dhabi Sports Channel' },
+                { name: 'Dubai Sports 1', kind: 'app', term: 'Dubai Sports', match: 'dubai', wiki: 'Dubai Sports Channel' },
+              ],
+            },
+            {
+              title: 'أفلام أجنبية', icon: 'film', color: '#e5484d',
+              items: [
+                { name: 'Avatar', kind: 'movie', term: 'Avatar', match: 'avatar', wiki: 'Avatar 2009 film' },
+                { name: 'The Dark Knight', kind: 'movie', term: 'The Dark Knight', match: 'dark knight', wiki: 'The Dark Knight film' },
+                { name: 'Inception', kind: 'movie', term: 'Inception', match: 'inception', wiki: 'Inception film' },
+                { name: 'Interstellar', kind: 'movie', term: 'Interstellar', match: 'interstellar', wiki: 'Interstellar film' },
+                { name: 'Gladiator', kind: 'movie', term: 'Gladiator', match: 'gladiator', wiki: 'Gladiator 2000 film' },
+                { name: 'John Wick', kind: 'movie', term: 'John Wick', match: 'john wick', wiki: 'John Wick film' },
+                { name: 'Mad Max Fury Road', kind: 'movie', term: 'Mad Max Fury Road', match: 'fury road', wiki: 'Mad Max Fury Road' },
+                { name: 'Fast X', kind: 'movie', term: 'Fast X', match: 'fast x', wiki: 'Fast X' },
+                { name: 'Extraction', kind: 'movie', term: 'Extraction', match: 'extraction', wiki: 'Extraction 2020 film' },
+              ],
+            },
+            {
+              title: 'مسلسلات مشهورة', icon: 'videocam', color: '#0091ff',
+              items: [
+                { name: 'Breaking Bad', kind: 'tv', term: 'Breaking Bad', match: 'breaking bad', wiki: 'Breaking Bad' },
+                { name: 'Game of Thrones', kind: 'tv', term: 'Game of Thrones', match: 'game of thrones', wiki: 'Game of Thrones' },
+                { name: 'Stranger Things', kind: 'tv', term: 'Stranger Things', match: 'stranger things', wiki: 'Stranger Things' },
+                { name: 'Peaky Blinders', kind: 'tv', term: 'Peaky Blinders', match: 'peaky', wiki: 'Peaky Blinders TV series' },
+                { name: 'Money Heist', kind: 'tv', term: 'Money Heist', match: 'money heist', wiki: 'Money Heist' },
+                { name: 'Squid Game', kind: 'tv', term: 'Squid Game', match: 'squid game', wiki: 'Squid Game' },
+                { name: 'Vikings', kind: 'tv', term: 'Vikings', match: 'vikings', wiki: 'Vikings TV series' },
+                { name: 'الحشاشين', kind: 'wiki', term: '', wiki: 'الحشاشين مسلسل', lang: 'ar' },
+                { name: 'العتاولة', kind: 'wiki', term: '', wiki: 'العتاولة مسلسل', lang: 'ar' },
+              ],
+            },
+          ];
+
+          async function itunesImg(c: Card): Promise<string | null> {
+            try {
+              const p = c.kind === 'movie' ? 'media=movie&entity=movie'
+                : c.kind === 'tv' ? 'media=tvShow&entity=tvSeason'
+                : 'media=software&entity=software';
+              const u = `https://itunes.apple.com/search?term=${encodeURIComponent(c.term)}&${p}&limit=8&country=us`;
+              const j = await (await fetch(u)).json();
+              const m = (c.match || c.name).toLowerCase();
+              const r = (j.results || []).find((x: any) =>
+                String(x.trackName || x.collectionName || '').toLowerCase().includes(m) && x.artworkUrl100);
+              return r ? String(r.artworkUrl100).replace(/\/\d+x\d+bb\./, '/400x400bb.') : null;
+            } catch {
+              return null;
+            }
+          }
+
+          async function wikiImg(q: string, lang = 'en'): Promise<string | null> {
+            try {
+              const u = `https://${lang}.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(q)}&gsrlimit=1&prop=pageimages&piprop=thumbnail&pithumbsize=300&format=json&origin=*`;
+              const j = await (await fetch(u)).json();
+              const pages = j && j.query && j.query.pages;
+              if (!pages) return null;
+              const p: any = Object.values(pages)[0];
+              return (p && p.thumbnail && p.thumbnail.source) || null;
+            } catch {
+              return null;
+            }
+          }
+
+          async function getImg(c: Card): Promise<string | null> {
+            if (c.kind !== 'wiki') {
+              const a = await itunesImg(c);
+              if (a) return a;
+            }
+            return c.wiki ? wikiImg(c.wiki, c.lang) : null;
+          }
+
+          export default function VipScreen() {
+            const [imgs, setImgs] = useState<Record<string, string>>({});
+
+            useEffect(() => {
+              let alive = true;
+              SECTIONS.forEach((sec) =>
+                sec.items.forEach((it) => {
+                  getImg(it).then((u) => {
+                    if (alive && u) setImgs((m) => ({ ...m, [it.name]: u }));
+                  });
+                })
+              );
+              return () => { alive = false; };
+            }, []);
+
+            const soon = (name: string) => Alert.alert(name, 'هذا المحتوى غير متوفر حالياً');
+            return (
+              <SafeAreaView style={s.wrap} edges={['top']}>
+                <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 30 }}>
+                  <View style={s.headRow}>
+                    <Ionicons name="star" size={22} color="#f5a524" />
+                    <Text style={s.head}>VIP</Text>
+                  </View>
+                  {SECTIONS.map((sec) => (
+                    <View key={sec.title} style={{ marginBottom: 18 }}>
+                      <Text style={s.secTitle}>{sec.title}</Text>
+                      <View style={s.grid}>
+                        {sec.items.map((it) => {
+                          const uri = imgs[it.name];
+                          return (
+                            <Pressable key={it.name} style={s.card} onPress={() => soon(it.name)}>
+                              <View style={[s.pic, { backgroundColor: sec.color + '22' }]}>
+                                {uri ? (
+                                  <Image source={{ uri }} style={s.img} resizeMode="cover" />
+                                ) : (
+                                  <Ionicons name={sec.icon} size={34} color={sec.color} />
+                                )}
+                              </View>
+                              <Text style={s.name} numberOfLines={2}>{it.name}</Text>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  ))}
+                </ScrollView>
+              </SafeAreaView>
+            );
+          }
+
+          const s = StyleSheet.create({
+            wrap: { flex: 1, backgroundColor: colors.bg },
+            headRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, marginHorizontal: 4 },
+            head: { color: colors.text, fontSize: 22, fontWeight: '800' },
+            secTitle: { color: colors.text, fontSize: 16, fontWeight: '700', marginBottom: 10, marginHorizontal: 4 },
+            grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+            card: { width: '31%' },
+            pic: { aspectRatio: 1, borderRadius: 14, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
+            img: { width: '100%', height: '100%' },
+            name: { color: colors.text, fontSize: 12, marginTop: 6, textAlign: 'center' },
+          });
+          EOF
+          done
           
       - name: Setup Node.js
         uses: actions/setup-node@v4
