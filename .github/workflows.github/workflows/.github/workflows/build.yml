@@ -16,13 +16,13 @@ jobs:
         run: |
           unzip -o iptv-app.zip -d /tmp/z
           cd /tmp/z
-          if [ "$(ls -1 | wc -l)" = "1" ] && [ -d "$(ls -1)" ]; then cd "$(ls -1)"; fi
+          if [ "$(ls -1 \vert{} wc -l)" = "1" ] && [ -d "$(ls -1)" ]; then cd "$(ls -1)"; fi
           cp -r . "$GITHUB_WORKSPACE"/
 
-      - name: Patch activation (200171)
+      - name: Patch activation with Firebase Cloud Realtime Database
         run: |
           for f in $(find "$GITHUB_WORKSPACE" -name activation.ts -not -path "*/node_modules/*"); do
-            printf "import { Session } from '../types';\n\nexport async function activate(code: string): Promise<Session> {\n  const validCode = '200171';\n  if (code.trim() !== validCode) throw new Error('كود التفعيل غير صحيح، حاول مرة أخرى');\n  return { success: true, serverUrl: 'http://localhost', username: code.trim(), password: 'password' };\n}\n" > "$f"
+            printf "import { Session } from '../types';\n\nexport async function activate(code: string): Promise<Session> {\n  const cleanCode = code.trim();\n  if (!cleanCode) throw new Error('يرجى إدخال كود التفعيل');\n  try {\n    const res = await fetch('https://iptv-8c164-default-rtdb.firebaseio.com/codes/' + cleanCode + '.json');\n    const data = await res.json();\n    if (!data || data.status !== 'active') {\n      throw new Error('كود التفعيل غير صالح أو تم إيقافه من الإدارة');\n    }\n    return { success: true, serverUrl: 'http://localhost', username: cleanCode, password: 'password' };\n  } catch (e: any) {\n    throw new Error(e.message || 'خطأ في الاتصال بقاعدة البيانات');\n  }\n}\n" > "$f"
           done
 
       - name: Patch xtream (free content + YouTube)
@@ -35,7 +35,6 @@ jobs:
             return { status: 'Active', exp_date: '2027-01-01', max_connections: '5', username: s.username };
           }
 
-          // ---------- helpers ----------
           let counter = 1000;
           const urlById = new Map<number, string>();
           const seriesById = new Map<number, string>();
@@ -44,15 +43,12 @@ jobs:
           const ytUrl = (vid: string) => `https://www.youtube.com/watch?v=${vid}`;
           const ytImg = (vid: string) => `https://img.youtube.com/vi/${vid}/hqdefault.jpg`;
 
-          // ---------- YOUTUBE: عدّل هذي القوائم وضيف فيديوهاتك ----------
-          // vid = الجزء الأخير من رابط اليوتيوب بعد v=
           const YT_VIDEOS: { title: string; vid: string }[] = [
             { title: 'Big Buck Bunny', vid: 'aqz-KE-bpKQ' },
             { title: 'Sintel', vid: 'eRsGyueVLvQ' },
             { title: 'Tears of Steel', vid: 'R6MlUcmOul8' },
             { title: 'ابن عباد', vid: '23HNDEik2fU' },
           ];
-          // بثوث مباشرة (أرقامها ممكن تتغير وبعضها ما يسمح بالتشغيل داخل التطبيق)
           const YT_LIVE: { title: string; vid: string }[] = [
             { title: 'الجزيرة', vid: '0zc9dACzJYY' },
             { title: 'سكاي نيوز عربية', vid: 'DTuF6hCLCGw' },
@@ -65,7 +61,6 @@ jobs:
               return { id, name: v.title, image: ytImg(v.vid), ext: 'mp4' } as any;
             });
 
-          // ---------- LIVE: free public channels (with real logos) ----------
           const LIVE_M3U = 'https://iptv-org.github.io/iptv/languages/ara.m3u';
           const GROUPS: Record<string, string> = {
             News: 'أخبار', Sports: 'رياضة', Kids: 'أطفال', Movies: 'أفلام', Music: 'موسيقى',
@@ -101,7 +96,6 @@ jobs:
             return live;
           }
 
-          // ---------- MOVIES / SERIES: Internet Archive (public domain) ----------
           const MOVIE_CATS: Record<string, { name: string; q: string }> = {
             '11': { name: 'أفلام كلاسيكية (ملك عام)', q: 'collection:feature_films AND mediatype:movies' },
             '12': { name: 'أفلام عربية', q: 'mediatype:movies AND (language:Arabic OR subject:arabic)' },
@@ -343,7 +337,6 @@ jobs:
               nav.navigate('Player', { url, title: it.name, live: kind === 'live' });
             };
 
-            // ---------- Live: grid of sections ----------
             if (isLive && !opened) {
               return (
                 <SafeAreaView style={s.wrap} edges={['top']}>
@@ -441,11 +434,9 @@ jobs:
 
       - name: Patch navigator + VIP screen
         run: |
-          # نحدد مجلد screens الحقيقي من مكان BrowseScreen.tsx (موجود فعلاً)
           BROWSE=$(find "$GITHUB_WORKSPACE" -name BrowseScreen.tsx -not -path "*/node_modules/*" | head -n 1)
           if [ -z "$BROWSE" ]; then echo "ERROR: screens folder not found"; exit 1; fi
           SCREENS_DIR="$(dirname "$BROWSE")"
-          echo "Screens dir: $SCREENS_DIR"
           cat > "$SCREENS_DIR/VipScreen.tsx" << 'EOF'
           import React, { useEffect, useState } from 'react';
           import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -453,7 +444,6 @@ jobs:
           import { Ionicons } from '@expo/vector-icons';
           import { colors } from '../theme';
 
-          // q = كلمات البحث عن الصورة بويكيبيديا، lang = لغة ويكيبيديا (افتراضي en)
           type Card = { name: string; q: string; lang?: string; img?: string };
           type Section = { title: string; icon: any; color: string; logo: boolean; items: Card[] };
 
@@ -579,12 +569,9 @@ jobs:
           });
           EOF
           for f in $(find "$GITHUB_WORKSPACE" -name RootNavigator.tsx -not -path "*/node_modules/*"); do
-          # نتخطى أي RootNavigator ما يجاور مجلد screens الحقيقي
           if [ "$(realpath "$(dirname "$f")/../screens" 2>/dev/null)" != "$(realpath "$SCREENS_DIR")" ]; then
-            echo "Skipping $f"
             continue
           fi
-          echo "Patching $f"
           cat > "$f" << 'EOF'
           import React from 'react';
           import { ActivityIndicator, View } from 'react-native';
