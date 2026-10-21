@@ -438,12 +438,15 @@ jobs:
           });
           EOF
           done
-          
+
       - name: Patch navigator + VIP screen
         run: |
-          for f in $(find "$GITHUB_WORKSPACE" -name RootNavigator.tsx -not -path "*/node_modules/*"); do
-          d="$(dirname "$f")/../screens"
-          cat > "$d/VipScreen.tsx" << 'EOF'
+          # نحدد مجلد screens الحقيقي من مكان BrowseScreen.tsx (موجود فعلاً)
+          BROWSE=$(find "$GITHUB_WORKSPACE" -name BrowseScreen.tsx -not -path "*/node_modules/*" | head -n 1)
+          if [ -z "$BROWSE" ]; then echo "ERROR: screens folder not found"; exit 1; fi
+          SCREENS_DIR="$(dirname "$BROWSE")"
+          echo "Screens dir: $SCREENS_DIR"
+          cat > "$SCREENS_DIR/VipScreen.tsx" << 'EOF'
           import React, { useEffect, useState } from 'react';
           import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
           import { SafeAreaView } from 'react-native-safe-area-context';
@@ -575,6 +578,13 @@ jobs:
             name: { color: colors.text, fontSize: 12, marginTop: 6, textAlign: 'center' },
           });
           EOF
+          for f in $(find "$GITHUB_WORKSPACE" -name RootNavigator.tsx -not -path "*/node_modules/*"); do
+          # نتخطى أي RootNavigator ما يجاور مجلد screens الحقيقي
+          if [ "$(realpath "$(dirname "$f")/../screens" 2>/dev/null)" != "$(realpath "$SCREENS_DIR")" ]; then
+            echo "Skipping $f"
+            continue
+          fi
+          echo "Patching $f"
           cat > "$f" << 'EOF'
           import React from 'react';
           import { ActivityIndicator, View } from 'react-native';
@@ -634,7 +644,7 @@ jobs:
           }
           EOF
           done
-          
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
