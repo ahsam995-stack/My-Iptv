@@ -27,7 +27,7 @@ jobs:
             printf "import { Session } from '../types';\n\nexport async function activate(code: string): Promise<Session> {\n  const cleanCode = code.trim();\n  if (!cleanCode) throw new Error('يرجى إدخال كود التفعيل');\n  try {\n    const res = await fetch('https://iptv-8c164-default-rtdb.firebaseio.com/codes/' + encodeURIComponent(cleanCode) + '.json');\n    const data = await res.json();\n    if (!data || data.status !== 'active') {\n      throw new Error('كود التفعيل غير صالح أو تم إيقافه من الإدارة');\n    }\n    return { success: true, serverUrl: 'http://localhost', username: cleanCode, password: 'password' };\n  } catch (e: any) {\n    throw new Error(e.message || 'خطأ في الاتصال بقاعدة البيانات');\n  }\n}\n" > "$f"
           done
 
-      - name: Patch xtream (free content + YouTube)
+      - name: Patch xtream (live + movie genres + series)
         run: |
           for f in $(find "$GITHUB_WORKSPACE" -name xtream.ts -not -path "*/node_modules/*"); do
           cat > "$f" << 'EOF'
@@ -45,12 +45,6 @@ jobs:
           const ytUrl = (vid: string) => `https://www.youtube.com/watch?v=${vid}`;
           const ytImg = (vid: string) => `https://img.youtube.com/vi/${vid}/hqdefault.jpg`;
 
-          const YT_VIDEOS: { title: string; vid: string }[] = [
-            { title: 'Big Buck Bunny', vid: 'aqz-KE-bpKQ' },
-            { title: 'Sintel', vid: 'eRsGyueVLvQ' },
-            { title: 'Tears of Steel', vid: 'R6MlUcmOul8' },
-            { title: 'ابن عباد', vid: '23HNDEik2fU' },
-          ];
           const YT_LIVE: { title: string; vid: string }[] = [
             { title: 'الجزيرة', vid: '0zc9dACzJYY' },
             { title: 'سكاي نيوز عربية', vid: 'DTuF6hCLCGw' },
@@ -99,25 +93,51 @@ jobs:
           }
 
           const MOVIE_CATS: Record<string, { name: string; q: string }> = {
-            '11': { name: 'أفلام كلاسيكية (ملك عام)', q: 'collection:feature_films AND mediatype:movies' },
-            '12': { name: 'أفلام عربية', q: 'mediatype:movies AND (language:Arabic OR subject:arabic)' },
-            '13': { name: 'أفلام كرتون', q: 'collection:animationandcartoons AND mediatype:movies' },
-            '14': { name: 'يوتيوب', q: '' },
+            '11': { name: 'أكشن', q: 'Action & Adventure' },
+            '12': { name: 'كوميدي', q: 'Comedy' },
+            '13': { name: 'دراما', q: 'Drama' },
+            '14': { name: 'رعب', q: 'Horror' },
+            '15': { name: 'رومانسي', q: 'Romance' },
+            '16': { name: 'خيال علمي', q: 'Sci-Fi & Fantasy' },
+            '17': { name: 'أنمي', q: 'Anime' },
+            '18': { name: 'وثائقي', q: 'Documentary' },
           };
           const SERIES_CATS: Record<string, { name: string; q: string }> = {
-            '21': { name: 'مسلسلات كلاسيكية', q: 'collection:classic_tv AND mediatype:movies' },
-            '22': { name: 'كرتون كلاسيكي', q: 'collection:classic_cartoons AND mediatype:movies' },
+            '21': { name: 'دراما', q: 'Drama' },
+            '22': { name: 'كوميدي', q: 'Comedy' },
+            '23': { name: 'أكشن ومغامرة', q: 'Action & Adventure' },
+            '24': { name: 'خيال علمي', q: 'Sci-Fi & Fantasy' },
+            '25': { name: 'أطفال', q: 'Kids' },
+            '26': { name: 'كرتون', q: 'Animation' },
+            '27': { name: 'واقعي', q: 'Reality TV' },
+            '28': { name: 'وثائقي', q: 'Documentary' },
           };
-
-          async function archiveList(q: string, rows = 24): Promise<{ identifier: string; title: any }[]> {
-            const u = `https://archive.org/advancedsearch.php?q=${encodeURIComponent(q)}&fl%5B%5D=identifier&fl%5B%5D=title&sort%5B%5D=downloads+desc&rows=${rows}&output=json`;
-            const j = await (await fetch(u)).json();
-            return j.response.docs || [];
-          }
 
           async function mp4Files(identifier: string): Promise<string[]> {
             const j = await (await fetch(`https://archive.org/metadata/${identifier}`)).json();
             return (j.files || []).map((x: any) => x.name as string).filter((n: string) => /\.mp4$/i.test(n)).sort();
+          }
+
+          async function itunesGenre(genre: string, tv: boolean): Promise<Item[]> {
+            const base = `https://itunes.apple.com/search?term=${encodeURIComponent(genre)}&media=${tv ? 'tvShow&entity=tvSeason' : 'movie&entity=movie'}&limit=60&country=us`;
+            let results: any[] = [];
+            try { results = (await (await fetch(base + '&attribute=genreIndex')).json()).results || []; } catch {}
+            if (!results.length) results = (await (await fetch(base)).json()).results || [];
+            const seen = new Set<string>();
+            const out: Item[] = [];
+            for (const r of results) {
+              const raw = String(tv ? (r.collectionName || r.trackName || '') : (r.trackName || ''));
+              const name = tv ? raw.replace(/,?\s*(Season|Series)\s*\d+.*$/i, '').trim() : raw;
+              if (!name || !r.artworkUrl100 || seen.has(name)) continue;
+              seen.add(name);
+              out.push({
+                id: ++counter,
+                name,
+                image: String(r.artworkUrl100).replace(/\/\d+x\d+bb\./, '/400x400bb.'),
+                ext: 'mp4',
+              } as any);
+            }
+            return out;
           }
 
           export async function getCategories(s: Session, kind: Kind): Promise<Category[]> {
@@ -138,25 +158,7 @@ jobs:
             const src = kind === 'movie' ? MOVIE_CATS : SERIES_CATS;
             const cat = src[categoryId];
             if (!cat) return [];
-            if (kind === 'movie' && categoryId === '14') return ytItems(YT_VIDEOS);
-            const docs = await archiveList(cat.q);
-            if (kind === 'series') {
-              return docs.map((d) => {
-                const id = ++counter;
-                seriesById.set(id, d.identifier);
-                return { id, name: String(d.title), image: arImg(d.identifier), ext: 'mp4' } as any;
-              });
-            }
-            const out = await Promise.all(docs.map(async (d) => {
-              try {
-                const files = await mp4Files(d.identifier);
-                if (!files.length) return null;
-                const id = ++counter;
-                urlById.set(id, `https://archive.org/download/${d.identifier}/${encodeURI(files[0])}`);
-                return { id, name: String(d.title), image: arImg(d.identifier), ext: 'mp4' } as any;
-              } catch { return null; }
-            }));
-            return out.filter(Boolean) as Item[];
+            return itunesGenre(cat.q, kind === 'series');
           }
 
           export const getSeriesInfo = async (s: Session, id: number): Promise<SeriesInfo> => {
@@ -249,12 +251,12 @@ jobs:
           EOF
           done
 
-      - name: Patch browse screen (sections grid + Auto Logout)
+      - name: Patch browse screen (sections grid + genres + search + Auto Logout)
         run: |
           for f in $(find "$GITHUB_WORKSPACE" -name BrowseScreen.tsx -not -path "*/node_modules/*"); do
           cat > "$f" << 'EOF'
           import React, { useEffect, useMemo, useState } from 'react';
-          import { ActivityIndicator, BackHandler, FlatList, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+          import { ActivityIndicator, Alert, BackHandler, FlatList, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
           import { SafeAreaView } from 'react-native-safe-area-context';
           import { useNavigation } from '@react-navigation/native';
           import { Ionicons } from '@expo/vector-icons';
@@ -267,6 +269,16 @@ jobs:
           const COLS = 3;
 
           const catIcon = (name: string): any => {
+            if (name.includes('أكشن')) return 'flash';
+            if (name.includes('كوميدي')) return 'happy';
+            if (name.includes('دراما')) return 'film';
+            if (name.includes('رعب')) return 'skull';
+            if (name.includes('رومانسي')) return 'heart';
+            if (name.includes('خيال')) return 'rocket';
+            if (name.includes('أنمي')) return 'sparkles';
+            if (name.includes('كرتون')) return 'color-palette';
+            if (name.includes('واقعي')) return 'videocam';
+            if (name.includes('وثائقي')) return 'earth';
             if (name.includes('يوتيوب')) return 'logo-youtube';
             if (name.includes('أخبار')) return 'newspaper';
             if (name.includes('رياضة')) return 'football';
@@ -274,7 +286,6 @@ jobs:
             if (name.includes('أفلام')) return 'film';
             if (name.includes('موسيقى')) return 'musical-notes';
             if (name.includes('دينية')) return 'moon';
-            if (name.includes('وثائقية')) return 'earth';
             if (name.includes('مسلسلات')) return 'videocam';
             if (name.includes('ثقافة')) return 'book';
             if (name.includes('ترفيه') || name.includes('منوعات')) return 'sparkles';
@@ -285,9 +296,10 @@ jobs:
             const { session, logout } = useAuth();
             const nav = useNavigation<any>();
             const isLive = kind === 'live';
+            const hasGrid = true;
             const [cats, setCats] = useState<Category[]>([]);
             const [cat, setCat] = useState<string | null>(null);
-            const [opened, setOpened] = useState(!isLive);
+            const [opened, setOpened] = useState(!hasGrid);
             const [items, setItems] = useState<Item[]>([]);
             const [q, setQ] = useState('');
             const [loading, setLoading] = useState(true);
@@ -321,7 +333,7 @@ jobs:
               api.getCategories(session!, kind)
                 .then((c) => {
                   setCats(c);
-                  if (isLive) setLoading(false);
+                  if (hasGrid) setLoading(false);
                   else { setCat(c[0]?.category_id ?? null); if (!c.length) setLoading(false); }
                 })
                 .catch((e) => { setError(e.message); setLoading(false); });
@@ -347,10 +359,10 @@ jobs:
             };
 
             useEffect(() => {
-              if (!isLive || !opened) return;
+              if (!hasGrid || !opened) return;
               const sub = BackHandler.addEventListener('hardwareBackPress', () => { goBack(); return true; });
               return () => sub.remove();
-            }, [isLive, opened]);
+            }, [hasGrid, opened]);
 
             const data = useMemo(() => {
               const t = q.trim().toLowerCase();
@@ -358,15 +370,16 @@ jobs:
             }, [items, q]);
 
             const open = (it: Item) => {
-              if (kind === 'series') return nav.navigate('SeriesDetail', { id: it.id, name: it.name });
-              const url = kind === 'live' ? api.liveUrl(session!, it.id) : api.movieUrl(session!, it.id, it.ext || 'mp4');
-              nav.navigate('Player', { url, title: it.name, live: kind === 'live' });
+              if (kind === 'movie') return; // الأفلام للعرض فقط
+              if (kind === 'series') { Alert.alert(it.name, 'هذا المحتوى غير متوفر حالياً'); return; }
+              const url = api.liveUrl(session!, it.id);
+              nav.navigate('Player', { url, title: it.name, live: true });
             };
 
-            if (isLive && !opened) {
+            if (hasGrid && !opened) {
               return (
                 <SafeAreaView style={s.wrap} edges={['top']}>
-                  <Text style={s.head}>القنوات</Text>
+                  <Text style={s.head}>{isLive ? 'القنوات' : kind === 'movie' ? 'الأفلام' : 'المسلسلات'}</Text>
                   {loading ? (
                     <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
                   ) : error ? (
@@ -395,35 +408,37 @@ jobs:
             const catName = cats.find((c) => c.category_id === cat)?.category_name || '';
             return (
               <SafeAreaView style={s.wrap} edges={['top']}>
-                {isLive ? (
+                {hasGrid ? (
                   <Pressable style={s.topBar} onPress={goBack} hitSlop={10}>
                     <Ionicons name="arrow-back" size={24} color={colors.text} />
                     <Text style={s.head2}>{catName}</Text>
                   </Pressable>
                 ) : null}
                 <TextInput style={s.search} value={q} onChangeText={setQ} placeholder="بحث..." placeholderTextColor={colors.muted} />
-                {!isLive ? <CategoryChips data={cats} selected={cat} onSelect={setCat} /> : null}
+                {!hasGrid ? <CategoryChips data={cats} selected={cat} onSelect={setCat} /> : null}
                 {loading ? (
                   <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
                 ) : error ? (
                   <Text style={s.error}>{error}</Text>
                 ) : (
                   <FlatList
-                    key={isLive ? 'list' : 'grid'}
+                    key="grid"
                     data={data}
-                    numColumns={isLive ? 1 : COLS}
+                    numColumns={COLS}
                     keyExtractor={(i) => String(i.id)}
                     initialNumToRender={12}
                     maxToRenderPerBatch={12}
                     windowSize={7}
                     removeClippedSubviews
                     contentContainerStyle={{ padding: 12, gap: 10 }}
-                    columnWrapperStyle={isLive ? undefined : { gap: 10 }}
+                    columnWrapperStyle={{ gap: 10 }}
                     renderItem={({ item }) =>
                       isLive ? (
-                        <Pressable style={s.row} onPress={() => open(item)}>
-                          {item.image ? <Image source={{ uri: item.image }} style={s.logo} resizeMode="contain" /> : <View style={s.logo} />}
-                          <Text style={s.rowText} numberOfLines={1}>{item.name}</Text>
+                        <Pressable style={s.card} onPress={() => open(item)}>
+                          <View style={s.chan}>
+                            {item.image ? <Image source={{ uri: item.image }} style={s.chanImg} resizeMode="contain" /> : null}
+                          </View>
+                          <Text style={s.cardText} numberOfLines={2}>{item.name}</Text>
                         </Pressable>
                       ) : (
                         <Pressable style={s.card} onPress={() => open(item)}>
@@ -451,207 +466,20 @@ jobs:
             row: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.card, borderRadius: 12, padding: 10, gap: 12 },
             logo: { width: 48, height: 48, borderRadius: 8, backgroundColor: colors.border },
             rowText: { color: colors.text, fontSize: 15, flex: 1 },
+            chan: { aspectRatio: 1, borderRadius: 12, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', padding: 8 },
+            chanImg: { width: '100%', height: '100%' },
             card: { flex: 1 / COLS },
             poster: { aspectRatio: 2 / 3, borderRadius: 10, backgroundColor: colors.border },
             cardText: { color: colors.text, fontSize: 12, marginTop: 6 },
           });
           EOF
           done
-          
-      - name: Patch navigator + VIP screen
+
+      - name: Patch navigator
         run: |
           BROWSE=$(find "$GITHUB_WORKSPACE" -name BrowseScreen.tsx -not -path "*/node_modules/*" | head -n 1)
           if [ -z "$BROWSE" ]; then echo "ERROR: screens folder not found"; exit 1; fi
-          SCREENS_DIR="$(dirname "$BROWSE")"
-          cat > "$SCREENS_DIR/VipScreen.tsx" << 'EOF'
-          import React, { useEffect, useState } from 'react';
-          import { ActivityIndicator, FlatList, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
-          import { SafeAreaView } from 'react-native-safe-area-context';
-          import { Ionicons } from '@expo/vector-icons';
-          import { useNavigation } from '@react-navigation/native';
-          import { colors } from '../theme';
-
-          type Item = { id: number; name: string; image: string; url: string };
-
-          export default function VipScreen() {
-            const nav = useNavigation<any>();
-            const [loading, setLoading] = useState(false);
-            const [items, setItems] = useState<Item[]>([]);
-            const [query, setQuery] = useState('');
-
-            const searchContent = async (searchKeyword = '') => {
-              setLoading(true);
-              try {
-                const q = searchKeyword.trim() 
-                  ? `(${encodeURIComponent(searchKeyword)}) AND mediatype:movies` 
-                  : 'collection:classic_tv AND mediatype:movies';
-                
-                const res = await fetch(`https://archive.org/advancedsearch.php?q=${q}&fl%5B%5D=identifier&fl%5B%5D=title&sort%5B%5D=downloads+desc&rows=24&output=json`);
-                const data = await res.json();
-                const docs = data.response?.docs || [];
-                const loaded: Item[] = [];
-                let idCounter = 6000;
-
-                for (const doc of docs) {
-                  try {
-                    const metaRes = await fetch(`https://archive.org/metadata/${doc.identifier}`);
-                    const metaJson = await metaRes.json();
-                    const files = (metaJson.files || []).filter((f: any) => /\.mp4$/i.test(f.name));
-                    if (files.length > 0) {
-                      const videoUrl = `https://archive.org/download/${doc.identifier}/${encodeURI(files[0].name)}`;
-                      const posterUrl = `https://archive.org/services/img/${doc.identifier}`;
-                      loaded.push({
-                        id: idCounter++,
-                        name: String(doc.title || 'محتوى حصري'),
-                        image: posterUrl,
-                        url: videoUrl,
-                      });
-                    }
-                  } catch {}
-                }
-                setItems(loaded);
-              } catch {}
-              setLoading(false);
-            };
-
-            useEffect(() => {
-              searchContent('');
-            }, []);
-
-            const openPlayer = (item: Item) => {
-              nav.navigate('Player', { url: item.url, title: item.name, live: false });
-            };
-
-            return (
-              <SafeAreaView style={s.wrap} edges={['top']}>
-                <View style={s.headRow}>
-                  <Ionicons name="star" size={22} color="#f5a524" />
-                  <Text style={s.head}>مكتبة VIP والبحث</Text>
-                </View>
-
-                <View style={s.searchRow}>
-                  <TextInput
-                    style={s.input}
-                    placeholder="ابحث عن أي فيلم أو مسلسل..."
-                    placeholderTextColor={colors.muted}
-                    value={query}
-                    onChangeText={setQuery}
-                    onSubmitEditing={() => searchContent(query)}
-                    returnKeyType="search"
-                  />
-                  <Pressable style={s.searchBtn} onPress={() => searchContent(query)}>
-                    <Ionicons name="search" size={20} color="#fff" />
-                  </Pressable>
-                </View>
-
-                {loading ? (
-                  <ActivityIndicator color={colors.primary} style={{ marginTop: 50 }} size="large" />
-                ) : (
-                  <FlatList
-                    data={items}
-                    numColumns={3}
-                    keyExtractor={(i) => String(i.id)}
-                    contentContainerStyle={{ padding: 10, gap: 10 }}
-                    columnWrapperStyle={{ gap: 10 }}
-                    renderItem={({ item }) => (
-                      <Pressable style={s.card} onPress={() => openPlayer(item)}>
-                        <Image source={{ uri: item.image }} style={s.poster} />
-                        <Text style={s.name} numberOfLines={2}>{item.name}</Text>
-                      </Pressable>
-                    )}
-                    ListEmptyComponent={<Text style={s.empty}>لا توجد نتائج مطابقة لبحثك</Text>}
-                  />
-                )}
-              </SafeAreaView>
-            );
-          }
-
-          const s = StyleSheet.create({
-            wrap: { flex: 1, backgroundColor: colors.bg },
-            headRow: { flexDirection: 'row', alignItems: 'center', gap: 8, margin: 16, marginBottom: 8 },
-            head: { color: colors.text, fontSize: 20, fontWeight: '800' },
-            searchRow: { flexDirection: 'row', paddingHorizontal: 12, marginBottom: 10, gap: 8 },
-            input: { flex: 1, backgroundColor: colors.card, color: colors.text, borderRadius: 10, paddingHorizontal: 14, height: 42, borderWidth: 1, borderColor: colors.border },
-            searchBtn: { backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 14, borderRadius: 10 },
-            card: { flex: 1 / 3 },
-            poster: { aspectRatio: 2 / 3, borderRadius: 10, backgroundColor: colors.border },
-            name: { color: colors.text, fontSize: 12, marginTop: 6, textAlign: 'center' },
-            empty: { color: colors.muted, textAlign: 'center', marginTop: 40, fontSize: 14 }
-          });
-          EOF
-          for f in $(find "$GITHUB_WORKSPACE" -name RootNavigator.tsx -not -path "*/node_modules/*"); do
-          if [ "$(realpath "$(dirname "$f")/../screens" 2>/dev/null)" != "$(realpath "$SCREENS_DIR")" ]; then
-            continue
-          fi
-          cat > "$f" << 'EOF'
-          import React from 'react';
-          import { ActivityIndicator, View } from 'react-native';
-          import { createNativeStackNavigator } from '@react-navigation/native-stack';
-          import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-          import { Ionicons } from '@expo/vector-icons';
-          import { useAuth } from '../store/auth';
-          import { colors } from '../theme';
-          import ActivationScreen from '../screens/ActivationScreen';
-          import BrowseScreen from '../screens/BrowseScreen';
-          import SeriesDetailScreen from '../screens/SeriesDetailScreen';
-          import PlayerScreen from '../screens/PlayerScreen';
-          import SettingsScreen from '../screens/SettingsScreen';
-          import Vip from '../screens/VipScreen';
-
-          const Stack = createNativeStackNavigator();
-          const Tab = createBottomTabNavigator();
-
-          const Live = () => <BrowseScreen kind="live" />;
-          const Movies = () => <BrowseScreen kind="movie" />;
-          const Series = () => <BrowseScreen kind="series" />;
-          function Tabs() {
-            const icon = (name: any) => ({ color, size }: any) => <Ionicons name={name} color={color} size={size} />;
-            return (
-              <Tab.Navigator screenOptions={{ headerShown: false, tabBarActiveTintColor: colors.primary }}>
-                <Tab.Screen name="Live" component={Live} options={{ title: 'البث المباشر', tabBarIcon: icon('tv') }} />
-                <Tab.Screen name="Movies" component={Movies} options={{ title: 'الأفلام', tabBarIcon: icon('film') }} />
-                <Tab.Screen name="Vip" component={Vip} options={{ title: 'VIP', tabBarIcon: icon('star') }} />
-                <Tab.Screen name="Series" component={Series} options={{ title: 'المسلسلات', tabBarIcon: icon('albums') }} />
-                <Tab.Screen name="Settings" component={SettingsScreen} options={{ title: 'الحساب', tabBarIcon: icon('person') }} />
-              </Tab.Navigator>
-            );
-          }
-
-          export default function RootNavigator() {
-            const { session, loading } = useAuth();
-            if (loading) {
-              return (
-                <View style={{ flex: 1, backgroundColor: colors.bg, justifyContent: 'center' }}>
-                  <ActivityIndicator color={colors.primary} size="large" />
-                </View>
-              );
-            }
-            return (
-              <Stack.Navigator screenOptions={{ headerShown: false }}>
-                {session ? (
-                  <>
-                    <Stack.Screen name="Tabs" component={Tabs} />
-                    <Stack.Screen name="SeriesDetail" component={SeriesDetailScreen} options={{ headerShown: true, title: '' }} />
-                    <Stack.Screen name="Player" component={PlayerScreen} options={{ animation: 'fade' }} />
-                  </>
-                ) : (
-                  <Stack.Screen name="Activation" component={ActivationScreen} />
-                )}
-              </Stack.Navigator>
-            );
-          }
-          EOF
-          done
-          
-      - name: Apply VIP tab to real project
-        run: |
-          VIP=$(find "$GITHUB_WORKSPACE" -name VipScreen.tsx -not -path "*/node_modules/*" | head -n 1)
-          if [ -z "$VIP" ]; then echo "ERROR: VipScreen.tsx not found"; exit 1; fi
-          echo "VIP source: $VIP"
           for f in $(find "$GITHUB_WORKSPACE" -path "*/src/navigation/RootNavigator.tsx" -not -path "*/node_modules/*"); do
-          d="$(dirname "$f")/../screens"
-          echo "Patching: $f"
-          cp "$VIP" "$d/VipScreen.tsx" 2>/dev/null || true
           cat > "$f" << 'EOF'
           import React from 'react';
           import { ActivityIndicator, View } from 'react-native';
@@ -711,9 +539,8 @@ jobs:
           }
           EOF
           done
-          grep -rn 'name="Vip"' "$GITHUB_WORKSPACE" --include=RootNavigator.tsx | cut -c1-120
 
-      - name: Update VIP screen images
+      - name: VIP screen (original curated list)
         run: |
           for f in $(find "$GITHUB_WORKSPACE" -path "*/src/navigation/RootNavigator.tsx" -not -path "*/node_modules/*"); do
           d="$(dirname "$f")/../screens"
@@ -875,7 +702,7 @@ jobs:
           });
           EOF
           done
-          
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
