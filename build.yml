@@ -50,6 +50,7 @@ jobs:
             { title: 'Big Buck Bunny', vid: 'aqz-KE-bpKQ' },
             { title: 'Sintel', vid: 'eRsGyueVLvQ' },
             { title: 'Tears of Steel', vid: 'R6MlUcmOul8' },
+            { title: 'ابن عباد', vid: '23HNDEik2fU' },
           ];
           // بثوث مباشرة (أرقامها ممكن تتغير وبعضها ما يسمح بالتشغيل داخل التطبيق)
           const YT_LIVE: { title: string; vid: string }[] = [
@@ -252,77 +253,395 @@ jobs:
           EOF
           done
 
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'zulu'
-          java-version: '17'
-
-      - name: Fix package.json versions
+      - name: Patch browse screen (sections grid)
         run: |
-          rm -rf node_modules package-lock.json android
-          node -e "
-          const fs = require('fs');
-          const p = JSON.parse(fs.readFileSync('package.json','utf8'));
-          p.dependencies = Object.assign({}, p.dependencies, {
-            'expo': '~51.0.39',
-            'expo-video': '~1.2.7',
-            'expo-modules-core': '~1.12.26',
-            'expo-font': '~12.0.10',
-            'react-native-safe-area-context': '4.10.5',
-            'react-native-screens': '~3.31.1',
-            '@react-navigation/native': '^6.1.18',
-            '@react-navigation/native-stack': '^6.11.0',
-            '@react-navigation/bottom-tabs': '^6.6.1',
-            '@react-native-async-storage/async-storage': '1.23.1',
-            'expo-secure-store': '~13.0.2',
-            'react-native-webview': '13.8.6',
-            'react-native-youtube-iframe': '^2.3.0'
+          for f in $(find "$GITHUB_WORKSPACE" -name BrowseScreen.tsx -not -path "*/node_modules/*"); do
+          cat > "$f" << 'EOF'
+          import React, { useEffect, useMemo, useState } from 'react';
+          import { ActivityIndicator, BackHandler, FlatList, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+          import { SafeAreaView } from 'react-native-safe-area-context';
+          import { useNavigation } from '@react-navigation/native';
+          import { Ionicons } from '@expo/vector-icons';
+          import { useAuth } from '../store/auth';
+          import { Category, Item, Kind } from '../types';
+          import * as api from '../api/xtream';
+          import CategoryChips from '../components/CategoryChips';
+          import { colors } from '../theme';
+
+          const COLS = 3;
+
+          const catIcon = (name: string): any => {
+            if (name.includes('يوتيوب')) return 'logo-youtube';
+            if (name.includes('أخبار')) return 'newspaper';
+            if (name.includes('رياضة')) return 'football';
+            if (name.includes('أطفال')) return 'happy';
+            if (name.includes('أفلام')) return 'film';
+            if (name.includes('موسيقى')) return 'musical-notes';
+            if (name.includes('دينية')) return 'moon';
+            if (name.includes('وثائقية')) return 'earth';
+            if (name.includes('مسلسلات')) return 'videocam';
+            if (name.includes('ثقافة')) return 'book';
+            if (name.includes('ترفيه') || name.includes('منوعات')) return 'sparkles';
+            return 'tv';
+          };
+
+          export default function BrowseScreen({ kind }: { kind: Kind }) {
+            const { session } = useAuth();
+            const nav = useNavigation<any>();
+            const isLive = kind === 'live';
+            const [cats, setCats] = useState<Category[]>([]);
+            const [cat, setCat] = useState<string | null>(null);
+            const [opened, setOpened] = useState(!isLive);
+            const [items, setItems] = useState<Item[]>([]);
+            const [q, setQ] = useState('');
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState('');
+
+            useEffect(() => {
+              api.getCategories(session!, kind)
+                .then((c) => {
+                  setCats(c);
+                  if (isLive) setLoading(false);
+                  else { setCat(c[0]?.category_id ?? null); if (!c.length) setLoading(false); }
+                })
+                .catch((e) => { setError(e.message); setLoading(false); });
+            }, [kind]);
+
+            useEffect(() => {
+              if (cat === null || !opened) return;
+              setLoading(true);
+              setError('');
+              api.getItems(session!, kind, cat)
+                .then(setItems)
+                .catch((e) => setError(e.message))
+                .finally(() => setLoading(false));
+            }, [cat, opened]);
+
+            const goBack = () => {
+              setOpened(false);
+              setCat(null);
+              setItems([]);
+              setQ('');
+              setError('');
+              setLoading(false);
+            };
+
+            useEffect(() => {
+              if (!isLive || !opened) return;
+              const sub = BackHandler.addEventListener('hardwareBackPress', () => { goBack(); return true; });
+              return () => sub.remove();
+            }, [isLive, opened]);
+
+            const data = useMemo(() => {
+              const t = q.trim().toLowerCase();
+              return t ? items.filter((i) => i.name.toLowerCase().includes(t)) : items;
+            }, [items, q]);
+
+            const open = (it: Item) => {
+              if (kind === 'series') return nav.navigate('SeriesDetail', { id: it.id, name: it.name });
+              const url = kind === 'live' ? api.liveUrl(session!, it.id) : api.movieUrl(session!, it.id, it.ext || 'mp4');
+              nav.navigate('Player', { url, title: it.name, live: kind === 'live' });
+            };
+
+            // ---------- Live: grid of sections ----------
+            if (isLive && !opened) {
+              return (
+                <SafeAreaView style={s.wrap} edges={['top']}>
+                  <Text style={s.head}>القنوات</Text>
+                  {loading ? (
+                    <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
+                  ) : error ? (
+                    <Text style={s.error}>{error}</Text>
+                  ) : (
+                    <FlatList
+                      key="cats"
+                      data={cats}
+                      numColumns={2}
+                      keyExtractor={(c) => c.category_id}
+                      contentContainerStyle={{ padding: 12, gap: 12 }}
+                      columnWrapperStyle={{ gap: 12 }}
+                      renderItem={({ item }) => (
+                        <Pressable style={s.catCard} onPress={() => { setCat(item.category_id); setOpened(true); }}>
+                          <Ionicons name={catIcon(item.category_name)} size={38} color={colors.primary} />
+                          <Text style={s.catText} numberOfLines={2}>{item.category_name}</Text>
+                        </Pressable>
+                      )}
+                      ListEmptyComponent={<Text style={s.error}>لا توجد أقسام</Text>}
+                    />
+                  )}
+                </SafeAreaView>
+              );
+            }
+
+            const catName = cats.find((c) => c.category_id === cat)?.category_name || '';
+            return (
+              <SafeAreaView style={s.wrap} edges={['top']}>
+                {isLive ? (
+                  <Pressable style={s.topBar} onPress={goBack} hitSlop={10}>
+                    <Ionicons name="arrow-back" size={24} color={colors.text} />
+                    <Text style={s.head2}>{catName}</Text>
+                  </Pressable>
+                ) : null}
+                <TextInput style={s.search} value={q} onChangeText={setQ} placeholder="بحث..." placeholderTextColor={colors.muted} />
+                {!isLive ? <CategoryChips data={cats} selected={cat} onSelect={setCat} /> : null}
+                {loading ? (
+                  <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
+                ) : error ? (
+                  <Text style={s.error}>{error}</Text>
+                ) : (
+                  <FlatList
+                    key={isLive ? 'list' : 'grid'}
+                    data={data}
+                    numColumns={isLive ? 1 : COLS}
+                    keyExtractor={(i) => String(i.id)}
+                    initialNumToRender={12}
+                    maxToRenderPerBatch={12}
+                    windowSize={7}
+                    removeClippedSubviews
+                    contentContainerStyle={{ padding: 12, gap: 10 }}
+                    columnWrapperStyle={isLive ? undefined : { gap: 10 }}
+                    renderItem={({ item }) =>
+                      isLive ? (
+                        <Pressable style={s.row} onPress={() => open(item)}>
+                          {item.image ? <Image source={{ uri: item.image }} style={s.logo} resizeMode="contain" /> : <View style={s.logo} />}
+                          <Text style={s.rowText} numberOfLines={1}>{item.name}</Text>
+                        </Pressable>
+                      ) : (
+                        <Pressable style={s.card} onPress={() => open(item)}>
+                          {item.image ? <Image source={{ uri: item.image }} style={s.poster} /> : <View style={s.poster} />}
+                          <Text style={s.cardText} numberOfLines={2}>{item.name}</Text>
+                        </Pressable>
+                      )
+                    }
+                    ListEmptyComponent={<Text style={s.error}>لا توجد نتائج</Text>}
+                  />
+                )}
+              </SafeAreaView>
+            );
+          }
+
+          const s = StyleSheet.create({
+            wrap: { flex: 1, backgroundColor: colors.bg },
+            head: { color: colors.text, fontSize: 22, fontWeight: '800', margin: 16, marginBottom: 4 },
+            topBar: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 10 },
+            head2: { color: colors.text, fontSize: 18, fontWeight: '700', flex: 1 },
+            catCard: { flex: 1, backgroundColor: colors.card, borderRadius: 16, borderWidth: 1, borderColor: colors.border, paddingVertical: 26, alignItems: 'center', justifyContent: 'center', gap: 10 },
+            catText: { color: colors.text, fontSize: 15, fontWeight: '700', textAlign: 'center', paddingHorizontal: 8 },
+            search: { backgroundColor: colors.card, color: colors.text, margin: 12, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, borderWidth: 1, borderColor: colors.border },
+            error: { color: colors.muted, textAlign: 'center', marginTop: 40 },
+            row: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.card, borderRadius: 12, padding: 10, gap: 12 },
+            logo: { width: 48, height: 48, borderRadius: 8, backgroundColor: colors.border },
+            rowText: { color: colors.text, fontSize: 15, flex: 1 },
+            card: { flex: 1 / COLS },
+            poster: { aspectRatio: 2 / 3, borderRadius: 10, backgroundColor: colors.border },
+            cardText: { color: colors.text, fontSize: 12, marginTop: 6 },
           });
-          p.overrides = Object.assign({}, p.overrides, {
-            'expo-modules-core': '~1.12.26',
-            'expo-font': '~12.0.10'
-          });
-          fs.writeFileSync('package.json', JSON.stringify(p, null, 2));
-          "
-
-      - name: Install Dependencies
-        run: |
-          npm install
-          npx expo install --fix
-
-      - name: Auto-install missing libraries
-        run: |
-          for i in 1 2 3 4 5; do
-            OUT=$(npx expo export --platform android 2>&1 || true)
-            MISSING=$(echo "$OUT" | grep -oP "Unable to resolve module \K[^ ]+" | head -1)
-            if [ -z "$MISSING" ]; then break; fi
-            echo "Installing missing: $MISSING"
-            npx expo install "$MISSING" || npm install "$MISSING"
+          EOF
           done
 
-      - name: Build Local APK
+      - name: Patch navigator + VIP screen
         run: |
-          npx expo prebuild --platform android --clean
-          mkdir -p android/app/src/main/res/values
-          if ! grep -rq "splashscreen_background" android/app/src/main/res/values/; then
-            printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="splashscreen_background">#000000</color>\n</resources>\n' > android/app/src/main/res/values/splash_fix.xml
-          fi
-          cd android
-          chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon
+          # نحدد مجلد screens الحقيقي من مكان BrowseScreen.tsx (موجود فعلاً)
+          BROWSE=$(find "$GITHUB_WORKSPACE" -name BrowseScreen.tsx -not -path "*/node_modules/*" | head -n 1)
+          if [ -z "$BROWSE" ]; then echo "ERROR: screens folder not found"; exit 1; fi
+          SCREENS_DIR="$(dirname "$BROWSE")"
+          echo "Screens dir: $SCREENS_DIR"
+          cat > "$SCREENS_DIR/VipScreen.tsx" << 'EOF'
+          import React, { useEffect, useState } from 'react';
+          import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+          import { SafeAreaView } from 'react-native-safe-area-context';
+          import { Ionicons } from '@expo/vector-icons';
+          import { colors } from '../theme';
 
-      - name: Upload APK Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: app-release-apk
-          path: android/app/build/outputs/apk/release/*.apk colors.danger, fontSize: 16 },
+          // q = كلمات البحث عن الصورة بويكيبيديا، lang = لغة ويكيبيديا (افتراضي en)
+          type Card = { name: string; q: string; lang?: string; img?: string };
+          type Section = { title: string; icon: any; color: string; logo: boolean; items: Card[] };
+
+          const SECTIONS: Section[] = [
+            {
+              title: 'قنوات رياضية', icon: 'football', color: '#30a46c', logo: true,
+              items: [
+                { name: 'beIN Sports 1', q: 'beIN Sports' },
+                { name: 'beIN Sports 2', q: 'beIN Sports' },
+                { name: 'beIN Sports 3', q: 'beIN Sports' },
+                { name: 'beIN Sports 4', q: 'beIN Sports' },
+                { name: 'beIN Sports 5', q: 'beIN Sports' },
+                { name: 'SSC Sport 1', q: 'Saudi Sports Company' },
+                { name: 'SSC Sport 2', q: 'Saudi Sports Company' },
+                { name: 'AD Sports 1', q: 'Abu Dhabi Sports Channel' },
+                { name: 'Dubai Sports 1', q: 'Dubai Sports Channel' },
+              ],
+            },
+            {
+              title: 'أفلام أجنبية', icon: 'film', color: '#e5484d', logo: false,
+              items: [
+                { name: 'Avatar', q: 'Avatar 2009 film' },
+                { name: 'The Dark Knight', q: 'The Dark Knight film' },
+                { name: 'Inception', q: 'Inception film' },
+                { name: 'Interstellar', q: 'Interstellar film' },
+                { name: 'Gladiator', q: 'Gladiator 2000 film' },
+                { name: 'John Wick', q: 'John Wick film' },
+                { name: 'Mad Max Fury Road', q: 'Mad Max Fury Road' },
+                { name: 'Fast X', q: 'Fast X' },
+                { name: 'Extraction', q: 'Extraction 2020 film' },
+              ],
+            },
+            {
+              title: 'مسلسلات مشهورة', icon: 'videocam', color: '#0091ff', logo: false,
+              items: [
+                { name: 'Breaking Bad', q: 'Breaking Bad' },
+                { name: 'Game of Thrones', q: 'Game of Thrones' },
+                { name: 'Stranger Things', q: 'Stranger Things' },
+                { name: 'Peaky Blinders', q: 'Peaky Blinders TV series' },
+                { name: 'Money Heist', q: 'Money Heist' },
+                { name: 'Squid Game', q: 'Squid Game' },
+                { name: 'Vikings', q: 'Vikings TV series' },
+                { name: 'الحشاشين', q: 'الحشاشين مسلسل', lang: 'ar' },
+                { name: 'العتاولة', q: 'العتاولة مسلسل', lang: 'ar' },
+              ],
+            },
+          ];
+
+          async function wikiImg(q: string, lang = 'en'): Promise<string | null> {
+            try {
+              const u = `https://${lang}.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(q)}&gsrlimit=1&prop=pageimages&piprop=thumbnail&pithumbsize=300&format=json&origin=*`;
+              const j = await (await fetch(u)).json();
+              const pages = j && j.query && j.query.pages;
+              if (!pages) return null;
+              const p: any = Object.values(pages)[0];
+              return (p && p.thumbnail && p.thumbnail.source) || null;
+            } catch {
+              return null;
+            }
+          }
+
+          export default function VipScreen() {
+            const [imgs, setImgs] = useState<Record<string, string>>({});
+
+            useEffect(() => {
+              let alive = true;
+              SECTIONS.forEach((sec) =>
+                sec.items.forEach((it) => {
+                  if (it.img) return;
+                  wikiImg(it.q, it.lang).then((u) => {
+                    if (alive && u) setImgs((m) => ({ ...m, [it.name]: u }));
+                  });
+                })
+              );
+              return () => { alive = false; };
+            }, []);
+
+            const soon = (name: string) => Alert.alert(name, 'هذا المحتوى غير متوفر حالياً');
+            return (
+              <SafeAreaView style={s.wrap} edges={['top']}>
+                <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 30 }}>
+                  <View style={s.headRow}>
+                    <Ionicons name="star" size={22} color="#f5a524" />
+                    <Text style={s.head}>VIP</Text>
+                  </View>
+                  {SECTIONS.map((sec) => (
+                    <View key={sec.title} style={{ marginBottom: 18 }}>
+                      <Text style={s.secTitle}>{sec.title}</Text>
+                      <View style={s.grid}>
+                        {sec.items.map((it) => {
+                          const uri = it.img || imgs[it.name];
+                          return (
+                            <Pressable key={it.name} style={s.card} onPress={() => soon(it.name)}>
+                              <View style={[s.pic, { backgroundColor: sec.logo ? '#ffffff' : sec.color + '22' }]}>
+                                {uri ? (
+                                  <Image source={{ uri }} style={s.img} resizeMode={sec.logo ? 'contain' : 'cover'} />
+                                ) : (
+                                  <Ionicons name={sec.icon} size={34} color={sec.color} />
+                                )}
+                              </View>
+                              <Text style={s.name} numberOfLines={2}>{it.name}</Text>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  ))}
+                </ScrollView>
+              </SafeAreaView>
+            );
+          }
+
+          const s = StyleSheet.create({
+            wrap: { flex: 1, backgroundColor: colors.bg },
+            headRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, marginHorizontal: 4 },
+            head: { color: colors.text, fontSize: 22, fontWeight: '800' },
+            secTitle: { color: colors.text, fontSize: 16, fontWeight: '700', marginBottom: 10, marginHorizontal: 4 },
+            grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+            card: { width: '31%' },
+            pic: { aspectRatio: 1, borderRadius: 14, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
+            img: { width: '100%', height: '100%' },
+            name: { color: colors.text, fontSize: 12, marginTop: 6, textAlign: 'center' },
           });
+          EOF
+          for f in $(find "$GITHUB_WORKSPACE" -name RootNavigator.tsx -not -path "*/node_modules/*"); do
+          # نتخطى أي RootNavigator ما يجاور مجلد screens الحقيقي
+          if [ "$(realpath "$(dirname "$f")/../screens" 2>/dev/null)" != "$(realpath "$SCREENS_DIR")" ]; then
+            echo "Skipping $f"
+            continue
+          fi
+          echo "Patching $f"
+          cat > "$f" << 'EOF'
+          import React from 'react';
+          import { ActivityIndicator, View } from 'react-native';
+          import { createNativeStackNavigator } from '@react-navigation/native-stack';
+          import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+          import { Ionicons } from '@expo/vector-icons';
+          import { useAuth } from '../store/auth';
+          import { colors } from '../theme';
+          import ActivationScreen from '../screens/ActivationScreen';
+          import BrowseScreen from '../screens/BrowseScreen';
+          import SeriesDetailScreen from '../screens/SeriesDetailScreen';
+          import PlayerScreen from '../screens/PlayerScreen';
+          import SettingsScreen from '../screens/SettingsScreen';
+          import Vip from '../screens/VipScreen';
+
+          const Stack = createNativeStackNavigator();
+          const Tab = createBottomTabNavigator();
+
+          const Live = () => <BrowseScreen kind="live" />;
+          const Movies = () => <BrowseScreen kind="movie" />;
+          const Series = () => <BrowseScreen kind="series" />;
+          function Tabs() {
+            const icon = (name: any) => ({ color, size }: any) => <Ionicons name={name} color={color} size={size} />;
+            return (
+              <Tab.Navigator screenOptions={{ headerShown: false, tabBarActiveTintColor: colors.primary }}>
+                <Tab.Screen name="Live" component={Live} options={{ title: 'البث المباشر', tabBarIcon: icon('tv') }} />
+                <Tab.Screen name="Movies" component={Movies} options={{ title: 'الأفلام', tabBarIcon: icon('film') }} />
+                <Tab.Screen name="Vip" component={Vip} options={{ title: 'VIP', tabBarIcon: icon('star') }} />
+                <Tab.Screen name="Series" component={Series} options={{ title: 'المسلسلات', tabBarIcon: icon('albums') }} />
+                <Tab.Screen name="Settings" component={SettingsScreen} options={{ title: 'الحساب', tabBarIcon: icon('person') }} />
+              </Tab.Navigator>
+            );
+          }
+
+          export default function RootNavigator() {
+            const { session, loading } = useAuth();
+            if (loading) {
+              return (
+                <View style={{ flex: 1, backgroundColor: colors.bg, justifyContent: 'center' }}>
+                  <ActivityIndicator color={colors.primary} size="large" />
+                </View>
+              );
+            }
+            return (
+              <Stack.Navigator screenOptions={{ headerShown: false }}>
+                {session ? (
+                  <>
+                    <Stack.Screen name="Tabs" component={Tabs} />
+                    <Stack.Screen name="SeriesDetail" component={SeriesDetailScreen} options={{ headerShown: true, title: '' }} />
+                    <Stack.Screen name="Player" component={PlayerScreen} options={{ animation: 'fade' }} />
+                  </>
+                ) : (
+                  <Stack.Screen name="Activation" component={ActivationScreen} />
+                )}
+              </Stack.Navigator>
+            );
+          }
           EOF
           done
 
@@ -354,7 +673,9 @@ jobs:
             '@react-navigation/native-stack': '^6.11.0',
             '@react-navigation/bottom-tabs': '^6.6.1',
             '@react-native-async-storage/async-storage': '1.23.1',
-            'expo-secure-store': '~13.0.2'
+            'expo-secure-store': '~13.0.2',
+            'react-native-webview': '13.8.6',
+            'react-native-youtube-iframe': '^2.3.0'
           });
           p.overrides = Object.assign({}, p.overrides, {
             'expo-modules-core': '~1.12.26',
