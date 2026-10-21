@@ -249,7 +249,7 @@ jobs:
           EOF
           done
 
-      - name: Patch browse screen (sections grid)
+      - name: Patch browse screen (sections grid + Auto Logout)
         run: |
           for f in $(find "$GITHUB_WORKSPACE" -name BrowseScreen.tsx -not -path "*/node_modules/*"); do
           cat > "$f" << 'EOF'
@@ -282,7 +282,7 @@ jobs:
           };
 
           export default function BrowseScreen({ kind }: { kind: Kind }) {
-            const { session } = useAuth();
+            const { session, logout } = useAuth();
             const nav = useNavigation<any>();
             const isLive = kind === 'live';
             const [cats, setCats] = useState<Category[]>([]);
@@ -292,6 +292,30 @@ jobs:
             const [q, setQ] = useState('');
             const [loading, setLoading] = useState(true);
             const [error, setError] = useState('');
+
+            // ---------- فحص تلقائي لحظي للتحقق من إيقاف الكود ----------
+            useEffect(() => {
+              if (!session?.username) return;
+              const checkStatus = async () => {
+                try {
+                  const res = await fetch(`https://iptv-8c164-default-rtdb.firebaseio.com/codes/${session.username}.json`);
+                  const data = await res.json();
+                  if (!data || data.status !== 'active') {
+                    logout(); // تسجيل خروج فوري وإخراج المستخدم
+                    return;
+                  }
+                  if (data.expiresAt && Date.now() > new Date(data.expiresAt).getTime()) {
+                    logout(); // تسجيل خروج عند انتهاء الوقت
+                  }
+                } catch (e) {
+                  // في حال حدوث خطأ شبكة بسيط لا نطرد المستخدم
+                }
+              };
+
+              checkStatus(); // فحص فور فتح الصفحة
+              const interval = setInterval(checkStatus, 10000); // فحص مستمر كل 10 ثوانٍ
+              return () => clearInterval(interval);
+            }, [session]);
 
             useEffect(() => {
               api.getCategories(session!, kind)
@@ -433,6 +457,7 @@ jobs:
           });
           EOF
           done
+
 
       - name: Patch navigator + VIP screen
         run: |
