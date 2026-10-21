@@ -438,7 +438,203 @@ jobs:
           });
           EOF
           done
+          
+      - name: Patch navigator + VIP screen
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -name RootNavigator.tsx -not -path "*/node_modules/*"); do
+          d="$(dirname "$f")/../screens"
+          cat > "$d/VipScreen.tsx" << 'EOF'
+          import React, { useEffect, useState } from 'react';
+          import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+          import { SafeAreaView } from 'react-native-safe-area-context';
+          import { Ionicons } from '@expo/vector-icons';
+          import { colors } from '../theme';
 
+          // q = كلمات البحث عن الصورة بويكيبيديا، lang = لغة ويكيبيديا (افتراضي en)
+          type Card = { name: string; q: string; lang?: string; img?: string };
+          type Section = { title: string; icon: any; color: string; logo: boolean; items: Card[] };
+
+          const SECTIONS: Section[] = [
+            {
+              title: 'قنوات رياضية', icon: 'football', color: '#30a46c', logo: true,
+              items: [
+                { name: 'beIN Sports 1', q: 'beIN Sports' },
+                { name: 'beIN Sports 2', q: 'beIN Sports' },
+                { name: 'beIN Sports 3', q: 'beIN Sports' },
+                { name: 'beIN Sports 4', q: 'beIN Sports' },
+                { name: 'beIN Sports 5', q: 'beIN Sports' },
+                { name: 'SSC Sport 1', q: 'Saudi Sports Company' },
+                { name: 'SSC Sport 2', q: 'Saudi Sports Company' },
+                { name: 'AD Sports 1', q: 'Abu Dhabi Sports Channel' },
+                { name: 'Dubai Sports 1', q: 'Dubai Sports Channel' },
+              ],
+            },
+            {
+              title: 'أفلام أجنبية', icon: 'film', color: '#e5484d', logo: false,
+              items: [
+                { name: 'Avatar', q: 'Avatar 2009 film' },
+                { name: 'The Dark Knight', q: 'The Dark Knight film' },
+                { name: 'Inception', q: 'Inception film' },
+                { name: 'Interstellar', q: 'Interstellar film' },
+                { name: 'Gladiator', q: 'Gladiator 2000 film' },
+                { name: 'John Wick', q: 'John Wick film' },
+                { name: 'Mad Max Fury Road', q: 'Mad Max Fury Road' },
+                { name: 'Fast X', q: 'Fast X' },
+                { name: 'Extraction', q: 'Extraction 2020 film' },
+              ],
+            },
+            {
+              title: 'مسلسلات مشهورة', icon: 'videocam', color: '#0091ff', logo: false,
+              items: [
+                { name: 'Breaking Bad', q: 'Breaking Bad' },
+                { name: 'Game of Thrones', q: 'Game of Thrones' },
+                { name: 'Stranger Things', q: 'Stranger Things' },
+                { name: 'Peaky Blinders', q: 'Peaky Blinders TV series' },
+                { name: 'Money Heist', q: 'Money Heist' },
+                { name: 'Squid Game', q: 'Squid Game' },
+                { name: 'Vikings', q: 'Vikings TV series' },
+                { name: 'الحشاشين', q: 'الحشاشين مسلسل', lang: 'ar' },
+                { name: 'العتاولة', q: 'العتاولة مسلسل', lang: 'ar' },
+              ],
+            },
+          ];
+
+          async function wikiImg(q: string, lang = 'en'): Promise<string | null> {
+            try {
+              const u = `https://${lang}.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(q)}&gsrlimit=1&prop=pageimages&piprop=thumbnail&pithumbsize=300&format=json&origin=*`;
+              const j = await (await fetch(u)).json();
+              const pages = j && j.query && j.query.pages;
+              if (!pages) return null;
+              const p: any = Object.values(pages)[0];
+              return (p && p.thumbnail && p.thumbnail.source) || null;
+            } catch {
+              return null;
+            }
+          }
+
+          export default function VipScreen() {
+            const [imgs, setImgs] = useState<Record<string, string>>({});
+
+            useEffect(() => {
+              let alive = true;
+              SECTIONS.forEach((sec) =>
+                sec.items.forEach((it) => {
+                  if (it.img) return;
+                  wikiImg(it.q, it.lang).then((u) => {
+                    if (alive && u) setImgs((m) => ({ ...m, [it.name]: u }));
+                  });
+                })
+              );
+              return () => { alive = false; };
+            }, []);
+
+            const soon = (name: string) => Alert.alert(name, 'هذا المحتوى غير متوفر حالياً');
+            return (
+              <SafeAreaView style={s.wrap} edges={['top']}>
+                <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 30 }}>
+                  <View style={s.headRow}>
+                    <Ionicons name="star" size={22} color="#f5a524" />
+                    <Text style={s.head}>VIP</Text>
+                  </View>
+                  {SECTIONS.map((sec) => (
+                    <View key={sec.title} style={{ marginBottom: 18 }}>
+                      <Text style={s.secTitle}>{sec.title}</Text>
+                      <View style={s.grid}>
+                        {sec.items.map((it) => {
+                          const uri = it.img || imgs[it.name];
+                          return (
+                            <Pressable key={it.name} style={s.card} onPress={() => soon(it.name)}>
+                              <View style={[s.pic, { backgroundColor: sec.logo ? '#ffffff' : sec.color + '22' }]}>
+                                {uri ? (
+                                  <Image source={{ uri }} style={s.img} resizeMode={sec.logo ? 'contain' : 'cover'} />
+                                ) : (
+                                  <Ionicons name={sec.icon} size={34} color={sec.color} />
+                                )}
+                              </View>
+                              <Text style={s.name} numberOfLines={2}>{it.name}</Text>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  ))}
+                </ScrollView>
+              </SafeAreaView>
+            );
+          }
+
+          const s = StyleSheet.create({
+            wrap: { flex: 1, backgroundColor: colors.bg },
+            headRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, marginHorizontal: 4 },
+            head: { color: colors.text, fontSize: 22, fontWeight: '800' },
+            secTitle: { color: colors.text, fontSize: 16, fontWeight: '700', marginBottom: 10, marginHorizontal: 4 },
+            grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+            card: { width: '31%' },
+            pic: { aspectRatio: 1, borderRadius: 14, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
+            img: { width: '100%', height: '100%' },
+            name: { color: colors.text, fontSize: 12, marginTop: 6, textAlign: 'center' },
+          });
+          EOF
+          cat > "$f" << 'EOF'
+          import React from 'react';
+          import { ActivityIndicator, View } from 'react-native';
+          import { createNativeStackNavigator } from '@react-navigation/native-stack';
+          import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+          import { Ionicons } from '@expo/vector-icons';
+          import { useAuth } from '../store/auth';
+          import { colors } from '../theme';
+          import ActivationScreen from '../screens/ActivationScreen';
+          import BrowseScreen from '../screens/BrowseScreen';
+          import SeriesDetailScreen from '../screens/SeriesDetailScreen';
+          import PlayerScreen from '../screens/PlayerScreen';
+          import SettingsScreen from '../screens/SettingsScreen';
+          import Vip from '../screens/VipScreen';
+
+          const Stack = createNativeStackNavigator();
+          const Tab = createBottomTabNavigator();
+
+          const Live = () => <BrowseScreen kind="live" />;
+          const Movies = () => <BrowseScreen kind="movie" />;
+          const Series = () => <BrowseScreen kind="series" />;
+          function Tabs() {
+            const icon = (name: any) => ({ color, size }: any) => <Ionicons name={name} color={color} size={size} />;
+            return (
+              <Tab.Navigator screenOptions={{ headerShown: false, tabBarActiveTintColor: colors.primary }}>
+                <Tab.Screen name="Live" component={Live} options={{ title: 'البث المباشر', tabBarIcon: icon('tv') }} />
+                <Tab.Screen name="Movies" component={Movies} options={{ title: 'الأفلام', tabBarIcon: icon('film') }} />
+                <Tab.Screen name="Vip" component={Vip} options={{ title: 'VIP', tabBarIcon: icon('star') }} />
+                <Tab.Screen name="Series" component={Series} options={{ title: 'المسلسلات', tabBarIcon: icon('albums') }} />
+                <Tab.Screen name="Settings" component={SettingsScreen} options={{ title: 'الحساب', tabBarIcon: icon('person') }} />
+              </Tab.Navigator>
+            );
+          }
+
+          export default function RootNavigator() {
+            const { session, loading } = useAuth();
+            if (loading) {
+              return (
+                <View style={{ flex: 1, backgroundColor: colors.bg, justifyContent: 'center' }}>
+                  <ActivityIndicator color={colors.primary} size="large" />
+                </View>
+              );
+            }
+            return (
+              <Stack.Navigator screenOptions={{ headerShown: false }}>
+                {session ? (
+                  <>
+                    <Stack.Screen name="Tabs" component={Tabs} />
+                    <Stack.Screen name="SeriesDetail" component={SeriesDetailScreen} options={{ headerShown: true, title: '' }} />
+                    <Stack.Screen name="Player" component={PlayerScreen} options={{ animation: 'fade' }} />
+                  </>
+                ) : (
+                  <Stack.Screen name="Activation" component={ActivationScreen} />
+                )}
+              </Stack.Navigator>
+            );
+          }
+          EOF
+          done
+          
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
