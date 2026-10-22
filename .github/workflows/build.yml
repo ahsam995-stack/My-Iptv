@@ -474,7 +474,83 @@ jobs:
           });
           EOF
           done
+      - name: Xtream server from Firebase
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -name xtream.ts -not -path "*/node_modules/*"); do
+          cat > "$f" << 'EOF'
+          import { Category, Item, Kind, Session, SeriesInfo } from '../types';
 
+          const FB = 'https://iptv-8c164-default-rtdb.firebaseio.com/codes/';
+          let creds: { base: string; u: string; p: string } | null = null;
+          let credsFor = '';
+
+          async function ensure(s: Session) {
+            if (creds && credsFor === s.username) return creds;
+            const r = await fetch(FB + encodeURIComponent(s.username) + '.json');
+            const d = await r.json();
+            if (!d || !d.serverUrl || !d.username || !d.password) {
+              throw new Error('بيانات السيرفر غير موجودة لهذا الكود');
+            }
+            creds = { base: String(d.serverUrl).replace(/\/+$/, ''), u: String(d.username), p: String(d.password) };
+            credsFor = s.username;
+            return creds;
+          }
+
+          async function call(s: Session, action: string, extra = ''): Promise<any> {
+            const c = await ensure(s);
+            const url = `${c.base}/player_api.php?username=${encodeURIComponent(c.u)}&password=${encodeURIComponent(c.p)}&action=${action}${extra}`;
+            const r = await fetch(url);
+            if (!r.ok) throw new Error('تعذّر الاتصال بالسيرفر');
+            return r.json();
+          }
+
+          export async function authenticate(s: Session) {
+            return { status: 'Active', exp_date: '2027-01-01', max_connections: '5', username: s.username };
+          }
+
+          export async function getCategories(s: Session, kind: Kind): Promise<Category[]> {
+            const action = kind === 'live' ? 'get_live_categories' : kind === 'movie' ? 'get_vod_categories' : 'get_series_categories';
+            const j = await call(s, action);
+            return (Array.isArray(j) ? j : []).map((c: any) => ({ category_id: String(c.category_id), category_name: String(c.category_name) })) as any;
+          }
+
+          export async function getItems(s: Session, kind: Kind, categoryId: string): Promise<Item[]> {
+            const action = kind === 'live' ? 'get_live_streams' : kind === 'movie' ? 'get_vod_streams' : 'get_series';
+            const j = await call(s, action, `&category_id=${encodeURIComponent(categoryId)}`);
+            return (Array.isArray(j) ? j : []).map((x: any) => ({
+              id: Number(kind === 'series' ? x.series_id : x.stream_id),
+              name: String(x.name || ''),
+              image: String(x.stream_icon || x.cover || ''),
+              ext: x.container_extension || (kind === 'live' ? 'm3u8' : 'mp4'),
+            })) as any;
+          }
+
+          export const getSeriesInfo = async (s: Session, id: number): Promise<SeriesInfo> => {
+            const j = await call(s, 'get_series_info', `&series_id=${id}`);
+            return j as any;
+          };
+
+          export const liveUrl = (s: Session, id: number) => creds ? `${creds.base}/live/${creds.u}/${creds.p}/${id}.m3u8` : '';
+          export const movieUrl = (s: Session, id: number, ext = 'mp4') => creds ? `${creds.base}/movie/${creds.u}/${creds.p}/${id}.${ext}` : '';
+          export const episodeUrl = (s: Session, id: string, ext = 'mp4') => creds ? `${creds.base}/series/${creds.u}/${creds.p}/${id}.${ext}` : '';
+          EOF
+          done
+
+      - name: Enable movies and series playback
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -name BrowseScreen.tsx -not -path "*/node_modules/*"); do
+          python3 - "$f" << 'PY'
+          import sys, re
+          p = sys.argv[1]
+          t = open(p, encoding='utf-8').read()
+          t = re.sub(r"if \(kind === 'movie'\) return;[^\n]*\n", "", t)
+          t = re.sub(r"if \(kind === 'series'\) \{ Alert\.alert[^\n]*\n", "if (kind === 'series') return nav.navigate('SeriesDetail', { id: it.id, name: it.name });\n", t)
+          t = t.replace("const url = api.liveUrl(session!, it.id);", "const url = kind === 'live' ? api.liveUrl(session!, it.id) : api.movieUrl(session!, it.id, it.ext || 'mp4');")
+          t = t.replace("live: true });", "live: kind === 'live' });")
+          open(p, 'w', encoding='utf-8').write(t)
+          PY
+          done
+          
       - name: Patch navigator
         run: |
           BROWSE=$(find "$GITHUB_WORKSPACE" -name BrowseScreen.tsx -not -path "*/node_modules/*" | head -n 1)
@@ -760,6 +836,10 @@ jobs:
       - name: Build Local APK
         run: |
           npx expo prebuild --platform android --clean
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          if ! grep -q "usesCleartextTraffic" "$MANIFEST"; then
+          sed -i 's/<application /<application android:usesCleartextTraffic="true" /' "$MANIFEST"
+          fi
           mkdir -p android/app/src/main/res/values
           if ! grep -rq "splashscreen_background" android/app/src/main/res/values/; then
             printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="splashscreen_background">#000000</color>\n</resources>\n' > android/app/src/main/res/values/splash_fix.xml
