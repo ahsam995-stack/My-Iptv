@@ -899,6 +899,7 @@ jobs:
                 if (!r) { Alert.alert(name, 'غير متوفر على السيرفر حالياً'); return; }
                 nav.navigate('Player', { url: r.url, title: r.title, live: true });
               } catch (e: any) {
+              Alert.alert(name, 'DBG ' + String(e.message) + ' | ' + typeof api.findChannel + ' | ' + Object.keys(api).join(',')); return;
                 Alert.alert(name, e.message || 'تعذّر الاتصال');
               }
             };
