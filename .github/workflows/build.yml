@@ -551,6 +551,51 @@ jobs:
           PY
           done
           
+      - name: Move movie channels to Movies tab
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -name xtream.ts -not -path "*/node_modules/*"); do
+          python3 - "$f" << 'PY'
+          import sys, re
+          p = sys.argv[1]
+          t = open(p, encoding='utf-8').read()
+          NEW1 = r"""
+          const isMovieLive = (n: string) => /movie|film|cinema/i.test(n);
+          const fixCats = (j: any) => (Array.isArray(j) ? j : []).map((c: any) => ({ category_id: String(c.category_id), category_name: String(c.category_name) }));
+
+          export async function getCategories(s: Session, kind: Kind): Promise<Category[]> {
+            if (kind === 'series') return fixCats(await call(s, 'get_series_categories')) as any;
+            const live = fixCats(await call(s, 'get_live_categories'));
+            if (kind === 'live') return live.filter((c: any) => !isMovieLive(c.category_name)) as any;
+            const vod = fixCats(await call(s, 'get_vod_categories'));
+            const moved = live.filter((c: any) => isMovieLive(c.category_name)).map((c: any) => ({ category_id: 'L:' + c.category_id, category_name: c.category_name }));
+            return [...vod, ...moved] as any;
+          }
+
+          export async function getItems(s: Session, kind: Kind, categoryId: string): Promise<Item[]> {
+            const fromLive = kind === 'live' || categoryId.startsWith('L:');
+            const cid = categoryId.replace('L:', '');
+            const action = fromLive ? 'get_live_streams' : kind === 'movie' ? 'get_vod_streams' : 'get_series';
+            const j = await call(s, action, `&category_id=${encodeURIComponent(cid)}`);
+            return (Array.isArray(j) ? j : []).map((x: any) => {
+              const raw = Number(kind === 'series' ? x.series_id : x.stream_id);
+              const id = fromLive && kind !== 'live' ? 100000000 + raw : raw;
+              return { id, name: String(x.name || ''), image: String(x.stream_icon || x.cover || ''), ext: fromLive ? 'm3u8' : (x.container_extension || 'mp4') };
+            }) as any;
+          }
+          """
+          NEW2 = r"""
+          export const movieUrl = (s: Session, id: number, ext = 'mp4') => {
+            if (!creds) return '';
+            if (id >= 100000000) return `${creds.base}/live/${creds.u}/${creds.p}/${id - 100000000}.m3u8`;
+            return `${creds.base}/movie/${creds.u}/${creds.p}/${id}.${ext}`;
+          };
+          """
+          t = re.sub(r"export async function getCategories.*?(?=export const getSeriesInfo)", lambda m: NEW1.strip() + "\n\n", t, flags=re.S)
+          t = re.sub(r"export const movieUrl = .*?(?=export const episodeUrl)", lambda m: NEW2.strip() + "\n", t, flags=re.S)
+          open(p, 'w', encoding='utf-8').write(t)
+          PY
+          done
+          
       - name: Patch navigator
         run: |
           BROWSE=$(find "$GITHUB_WORKSPACE" -name BrowseScreen.tsx -not -path "*/node_modules/*" | head -n 1)
@@ -778,7 +823,111 @@ jobs:
           });
           EOF
           done
+          
+      - name: Channels to Movies and Series tabs and link VIP
+        run: |
+          python3 - << 'PY'
+          import os, re
+          root = os.environ['GITHUB_WORKSPACE']
 
+          def find(name):
+              for d, _, fs in os.walk(root):
+                  if 'node_modules' in d:
+                      continue
+                  if name in fs:
+                      return os.path.join(d, name)
+              return None
+
+          CATS = r"""
+          const isMovieCat = (n: string) => /movie|film|cinema/i.test(n);
+          const isSeriesCat = (n: string) => /series|serie|tv show|مسلسل/i.test(n) && !isMovieCat(n);
+          const normCats = (j: any) => (Array.isArray(j) ? j : []).map((c: any) => ({ category_id: String(c.category_id), category_name: String(c.category_name) }));
+
+          export async function getCategories(s: Session, kind: Kind): Promise<Category[]> {
+            const live = normCats(await call(s, 'get_live_categories'));
+            if (kind === 'live') return live.filter((c: any) => !isMovieCat(c.category_name) && !isSeriesCat(c.category_name)) as any;
+            const vod = normCats(await call(s, kind === 'movie' ? 'get_vod_categories' : 'get_series_categories'));
+            const moved = live
+              .filter((c: any) => (kind === 'movie' ? isMovieCat(c.category_name) : isSeriesCat(c.category_name)))
+              .map((c: any) => ({ category_id: 'L:' + c.category_id, category_name: c.category_name }));
+            return [...vod, ...moved] as any;
+          }
+
+          export async function getItems(s: Session, kind: Kind, categoryId: string): Promise<Item[]> {
+            const fromLive = kind === 'live' || categoryId.startsWith('L:');
+            const cid = categoryId.replace('L:', '');
+            const action = fromLive ? 'get_live_streams' : kind === 'movie' ? 'get_vod_streams' : 'get_series';
+            const j = await call(s, action, `&category_id=${encodeURIComponent(cid)}`);
+            return (Array.isArray(j) ? j : []).map((x: any) => {
+              const raw = Number(kind === 'series' && !fromLive ? x.series_id : x.stream_id);
+              const id = fromLive && kind !== 'live' ? 100000000 + raw : raw;
+              return { id, name: String(x.name || ''), image: String(x.stream_icon || x.cover || ''), ext: fromLive ? 'm3u8' : (x.container_extension || 'mp4') };
+            }) as any;
+          }
+          """
+
+          URLS = r"""
+          export const movieUrl = (s: Session, id: number, ext = 'mp4') => {
+            if (!creds) return '';
+            if (id >= 100000000) return `${creds.base}/live/${creds.u}/${creds.p}/${id - 100000000}.m3u8`;
+            return `${creds.base}/movie/${creds.u}/${creds.p}/${id}.${ext}`;
+          };
+          """
+
+          FIND = r"""
+          let allLive: any[] | null = null;
+          let allVod: any[] | null = null;
+          const normName = (x: string) => ' ' + String(x).toLowerCase().replace(/[^a-z0-9\u0600-\u06ff]+/g, ' ').trim() + ' ';
+
+          export async function findChannel(s: Session, name: string): Promise<{ url: string; title: string } | null> {
+            const q = normName(name);
+            if (!allLive) { const j = await call(s, 'get_live_streams'); allLive = Array.isArray(j) ? j : []; }
+            const hit = allLive.find((x: any) => normName(x.name || '').includes(q));
+            if (hit) return { url: liveUrl(s, Number(hit.stream_id)), title: String(hit.name) };
+            if (!allVod) { try { const j = await call(s, 'get_vod_streams'); allVod = Array.isArray(j) ? j : []; } catch { allVod = []; } }
+            const v = allVod.find((x: any) => normName(x.name || '').includes(q));
+            if (v) return { url: movieUrl(s, Number(v.stream_id), v.container_extension || 'mp4'), title: String(v.name) };
+            return null;
+          }
+          """
+
+          NEWSOON = r"""const nav = useNavigation<any>();
+            const { session } = useAuth();
+            const soon = async (name: string) => {
+              try {
+                const r = await api.findChannel(session!, name);
+                if (!r) { Alert.alert(name, 'غير متوفر على السيرفر حالياً'); return; }
+                nav.navigate('Player', { url: r.url, title: r.title, live: true });
+              } catch (e: any) {
+                Alert.alert(name, e.message || 'تعذّر الاتصال');
+              }
+            };
+          """
+
+          p = find('xtream.ts')
+          if p:
+              t = open(p, encoding='utf-8').read()
+              t = re.sub(r"export async function getCategories.*?(?=export const getSeriesInfo)", lambda m: CATS.strip() + "\n\n", t, flags=re.S)
+              t = re.sub(r"export const movieUrl = .*?(?=export const episodeUrl)", lambda m: URLS.strip() + "\n", t, flags=re.S)
+              if 'findChannel' not in t:
+                  t = t.rstrip() + "\n\n" + FIND.strip() + "\n"
+              open(p, 'w', encoding='utf-8').write(t)
+
+          p = find('BrowseScreen.tsx')
+          if p:
+              t = open(p, encoding='utf-8').read()
+              t = t.replace("if (kind === 'series') return nav.navigate('SeriesDetail', { id: it.id, name: it.name });", "if (kind === 'series' && it.id < 100000000) return nav.navigate('SeriesDetail', { id: it.id, name: it.name });")
+              t = t.replace("live: kind === 'live' });", "live: kind === 'live' || it.id >= 100000000 });")
+              open(p, 'w', encoding='utf-8').write(t)
+
+          p = find('VipScreen.tsx')
+          if p:
+              t = open(p, encoding='utf-8').read()
+              t = t.replace("import { colors } from '../theme';", "import { colors } from '../theme';\nimport { useNavigation } from '@react-navigation/native';\nimport { useAuth } from '../store/auth';\nimport * as api from '../api/xtream';", 1)
+              t = re.sub(r"const soon = [^\n]*\n", lambda m: NEWSOON, t, count=1)
+              open(p, 'w', encoding='utf-8').write(t)
+          PY
+          
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
