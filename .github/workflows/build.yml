@@ -533,6 +533,20 @@ jobs:
           export const liveUrl = (s: Session, id: number) => creds ? `${creds.base}/live/${creds.u}/${creds.p}/${id}.m3u8` : '';
           export const movieUrl = (s: Session, id: number, ext = 'mp4') => creds ? `${creds.base}/movie/${creds.u}/${creds.p}/${id}.${ext}` : '';
           export const episodeUrl = (s: Session, id: string, ext = 'mp4') => creds ? `${creds.base}/series/${creds.u}/${creds.p}/${id}.${ext}` : '';
+          let allLive: any[] | null = null;
+          let allVod: any[] | null = null;
+          const normName = (x: string) => ' ' + String(x).toLowerCase().replace(/[^a-z0-9\u0600-\u06ff]+/g, ' ').trim() + ' ';
+
+          export async function findChannel(s: Session, name: string): Promise<{ url: string; title: string } | null> {
+            const q = normName(name);
+            if (!allLive) { const j = await call(s, 'get_live_streams'); allLive = Array.isArray(j) ? j : []; }
+            const hit = allLive.find((x: any) => normName(x.name || '').includes(q));
+            if (hit) return { url: liveUrl(s, Number(hit.stream_id)), title: String(hit.name) };
+            if (!allVod) { try { const j = await call(s, 'get_vod_streams'); allVod = Array.isArray(j) ? j : []; } catch { allVod = []; } }
+            const v = allVod.find((x: any) => normName(x.name || '').includes(q));
+            if (v) return { url: movieUrl(s, Number(v.stream_id), v.container_extension || 'mp4'), title: String(v.name) };
+            return null;
+          }
           EOF
           done
 
