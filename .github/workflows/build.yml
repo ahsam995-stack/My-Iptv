@@ -487,7 +487,11 @@ jobs:
           async function ensure(s: Session) {
             if (creds && credsFor === s.username) return creds;
             const r = await fetch(FB + encodeURIComponent(s.username) + '.json');
-            const d = await r.json();
+            let d = await r.json();
+            if (d && d.line) {
+              const r2 = await fetch('https://iptv-8c164-default-rtdb.firebaseio.com/lines/' + encodeURIComponent(String(d.line)) + '.json');
+              d = await r2.json();
+            }
             if (!d || !d.serverUrl || !d.username || !d.password) {
               throw new Error('بيانات السيرفر غير موجودة لهذا الكود');
             }
