@@ -995,6 +995,52 @@ jobs:
               open(p, 'w', encoding='utf-8').write(t)
           PY
           
+      - name: Release device lock on sign out
+        run: |
+          python3 - << 'PY'
+          import os
+          root = os.environ['GITHUB_WORKSPACE']
+
+          def find(name):
+              for d, _, fs in os.walk(root):
+                  if 'node_modules' in d:
+                      continue
+                  if name in fs:
+                      return os.path.join(d, name)
+              return None
+
+          NEWOUT = r"""const signOut = useCallback(async () => {
+            try {
+              const raw = await SecureStore.getItemAsync(KEY);
+              const id = await AsyncStorage.getItem('device_id');
+              if (raw && id) {
+                const s = JSON.parse(raw);
+                const u = 'https://iptv-8c164-default-rtdb.firebaseio.com/codes/' + encodeURIComponent(s.username) + '/deviceId.json';
+                const cur = await (await fetch(u)).json();
+                if (cur === id) await fetch(u, { method: 'DELETE' });
+              }
+            } catch (e) {}
+            await SecureStore.deleteItemAsync(KEY).catch(() => {});
+            setSession(null);
+          }, []);"""
+
+          p = find('auth.tsx')
+          if p:
+              t = open(p, encoding='utf-8').read()
+              a = t.index('const signOut = useCallback')
+              b = t.index('}, []);', a) + len('}, []);')
+              t = t[:a] + NEWOUT + t[b:]
+              if 'AsyncStorage' not in t.split('export')[0]:
+                  t = t.replace("import * as SecureStore from 'expo-secure-store';", "import * as SecureStore from 'expo-secure-store';\nimport AsyncStorage from '@react-native-async-storage/async-storage';", 1)
+              open(p, 'w', encoding='utf-8').write(t)
+
+          p = find('BrowseScreen.tsx')
+          if p:
+              t = open(p, encoding='utf-8').read()
+              t = t.replace("const { session, logout } = useAuth();", "const { session, signOut: logout } = useAuth();")
+              open(p, 'w', encoding='utf-8').write(t)
+          PY
+          
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
