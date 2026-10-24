@@ -26,7 +26,50 @@ jobs:
           for f in $(find "$GITHUB_WORKSPACE" -name activation.ts -not -path "*/node_modules/*"); do
             printf "import { Session } from '../types';\n\nexport async function activate(code: string): Promise<Session> {\n  const cleanCode = code.trim();\n  if (!cleanCode) throw new Error('يرجى إدخال كود التفعيل');\n  try {\n    const res = await fetch('https://iptv-8c164-default-rtdb.firebaseio.com/codes/' + encodeURIComponent(cleanCode) + '.json');\n    const data = await res.json();\n    if (!data || data.status !== 'active') {\n      throw new Error('كود التفعيل غير صالح أو تم إيقافه من الإدارة');\n    }\n    return { success: true, serverUrl: 'http://localhost', username: cleanCode, password: 'password' };\n  } catch (e: any) {\n    throw new Error(e.message || 'خطأ في الاتصال بقاعدة البيانات');\n  }\n}\n" > "$f"
           done
+      - name: Device lock activation
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -name activation.ts -not -path "*/node_modules/*"); do
+          cat > "$f" << 'EOF'
+          import AsyncStorage from '@react-native-async-storage/async-storage';
+          import { Session } from '../types';
 
+          const FB = 'https://iptv-8c164-default-rtdb.firebaseio.com/codes/';
+
+          async function deviceId(): Promise<string> {
+            let id = await AsyncStorage.getItem('device_id');
+            if (!id) {
+              id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+              await AsyncStorage.setItem('device_id', id);
+            }
+            return id;
+          }
+
+          export async function activate(code: string): Promise<Session> {
+            const cleanCode = code.trim();
+            if (!cleanCode) throw new Error('يرجى إدخال كود التفعيل');
+            let data: any;
+            try {
+              const res = await fetch(FB + encodeURIComponent(cleanCode) + '.json');
+              data = await res.json();
+            } catch (e) {
+              throw new Error('خطأ في الاتصال بقاعدة البيانات');
+            }
+            if (!data || data.status !== 'active') {
+              throw new Error('كود التفعيل غير صالح أو تم إيقافه من الإدارة');
+            }
+            const me = await deviceId();
+            if (data.deviceId && data.deviceId !== me) {
+              throw new Error('هذا الكود مستخدم على جهاز آخر');
+            }
+            if (!data.deviceId) {
+              const r = await fetch(FB + encodeURIComponent(cleanCode) + '/deviceId.json', { method: 'PUT', body: JSON.stringify(me) });
+              if (!r.ok) throw new Error('تعذّر ربط الكود بهذا الجهاز');
+            }
+            return { success: true, serverUrl: 'http://localhost', username: cleanCode, password: 'password' };
+          }
+          EOF
+          done
+          
       - name: Patch xtream (live + movie genres + series)
         run: |
           for f in $(find "$GITHUB_WORKSPACE" -name xtream.ts -not -path "*/node_modules/*"); do
