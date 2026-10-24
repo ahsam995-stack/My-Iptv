@@ -20,7 +20,12 @@ jobs:
           cp -r "$(dirname "$APP")"/. "$GITHUB_WORKSPACE"/
           cd "$GITHUB_WORKSPACE"
           ls -R src | head -50
-
+          
+      - name: Show auth store
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          for f in $(find src -name "auth*" | head -3); do echo "=== $f"; cat "$f"; done
+          
       - name: Patch activation with Firebase Cloud Realtime Database
         run: |
           for f in $(find "$GITHUB_WORKSPACE" -name activation.ts -not -path "*/node_modules/*"); do
