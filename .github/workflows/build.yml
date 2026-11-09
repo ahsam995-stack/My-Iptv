@@ -1042,6 +1042,178 @@ jobs:
               open(p, 'w', encoding='utf-8').write(t)
           PY
           
+      - name: Free channels fallback when no server
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -name xtream.ts -not -path "*/node_modules/*"); do
+          cat > "$f" << 'EOF'
+          import { Category, Item, Kind, Session, SeriesInfo } from '../types';
+
+          const FB = 'https://iptv-8c164-default-rtdb.firebaseio.com/codes/';
+          let creds: { base: string; u: string; p: string } | null = null;
+          let credsFor = '';
+          let checked = false;
+          let counter = 1000;
+          const urlById = new Map<number, string>();
+          const NOIMG = 'https://placehold.co/400x400/111827/ffffff.png';
+          const ytUrl = (vid: string) => `https://www.youtube.com/watch?v=${vid}`;
+          const ytImg = (vid: string) => `https://img.youtube.com/vi/${vid}/hqdefault.jpg`;
+
+          async function ensure(s: Session) {
+            if (checked && credsFor === s.username) return creds;
+            try {
+              const d = await (await fetch(FB + encodeURIComponent(s.username) + '.json')).json();
+              creds = null;
+              if (d && d.serverUrl && d.username && d.password) {
+                creds = { base: String(d.serverUrl).replace(/\/+$/, ''), u: String(d.username), p: String(d.password) };
+              }
+              credsFor = s.username;
+              checked = true;
+            } catch {}
+            return creds;
+          }
+
+          async function call(s: Session, action: string, extra = ''): Promise<any> {
+            const c = await ensure(s);
+            if (!c) throw new Error('بيانات السيرفر غير موجودة');
+            const url = `${c.base}/player_api.php?username=${encodeURIComponent(c.u)}&password=${encodeURIComponent(c.p)}&action=${action}${extra}`;
+            const r = await fetch(url);
+            if (!r.ok) throw new Error('تعذّر الاتصال بالسيرفر');
+            return r.json();
+          }
+
+          export async function authenticate(s: Session) {
+            return { status: 'Active', exp_date: '2027-01-01', max_connections: '5', username: s.username };
+          }
+
+          const YT_LIVE: { title: string; vid: string }[] = [
+            { title: 'الجزيرة', vid: '0zc9dACzJYY' },
+            { title: 'سكاي نيوز عربية', vid: 'DTuF6hCLCGw' },
+            { title: 'العربية', vid: 'h9gGE5QxanU' },
+          ];
+          const ytItems = (list: { title: string; vid: string }[]): Item[] =>
+            list.map((v) => {
+              const id = ++counter;
+              urlById.set(id, ytUrl(v.vid));
+              return { id, name: v.title, image: ytImg(v.vid), ext: 'mp4' } as any;
+            });
+
+          const LIVE_M3U = 'https://iptv-org.github.io/iptv/languages/ara.m3u';
+          const GROUPS: Record<string, string> = {
+            News: 'أخبار', Sports: 'رياضة', Kids: 'أطفال', Movies: 'أفلام', Music: 'موسيقى',
+            Religious: 'دينية', Entertainment: 'ترفيه', General: 'عامة', Documentary: 'وثائقية',
+            Series: 'مسلسلات', Culture: 'ثقافة', Lifestyle: 'منوعات', Undefined: 'قنوات أخرى',
+          };
+          let live: { cats: Category[]; items: Record<string, Item[]> } | null = null;
+
+          async function loadLive() {
+            if (live) return live;
+            const text = await (await fetch(LIVE_M3U)).text();
+            const lines = text.split(/\r?\n/);
+            const items: Record<string, Item[]> = {};
+            for (let i = 0; i < lines.length; i++) {
+              const l = lines[i];
+              if (!l.startsWith('#EXTINF')) continue;
+              let url = '';
+              for (let j = i + 1; j < lines.length; j++) {
+                if (lines[j].trim() && !lines[j].startsWith('#')) { url = lines[j].trim(); break; }
+              }
+              if (!url.startsWith('https://')) continue;
+              const attrs: Record<string, string> = {};
+              l.replace(/([\w-]+)="([^"]*)"/g, (_m, k, v) => { attrs[k] = v; return ''; });
+              const name = l.substring(l.lastIndexOf(',') + 1).trim();
+              if (!name) continue;
+              const g = (attrs['group-title'] || 'Undefined').split(';')[0] || 'Undefined';
+              const id = ++counter;
+              urlById.set(id, url);
+              (items[g] = items[g] || []).push({ id, name, image: attrs['tvg-logo'] || NOIMG, ext: 'm3u8' } as any);
+            }
+            const cats = Object.keys(items).map((g) => ({ category_id: 'L:' + g, category_name: GROUPS[g] || g }));
+            live = { cats: cats as any, items };
+            return live;
+          }
+
+          const isMovieCat = (n: string) => /movie|film|cinema/i.test(n);
+          const isSeriesCat = (n: string) => /series|serie|tv show|مسلسل/i.test(n) && !isMovieCat(n);
+          const normCats = (j: any) => (Array.isArray(j) ? j : []).map((c: any) => ({ category_id: String(c.category_id), category_name: String(c.category_name) }));
+
+          export async function getCategories(s: Session, kind: Kind): Promise<Category[]> {
+            const c = await ensure(s);
+            if (!c) {
+              if (kind !== 'live') return [];
+              const l = await loadLive();
+              return [{ category_id: 'L:YT', category_name: 'قنوات يوتيوب' } as any, ...l.cats];
+            }
+            const liveCats = normCats(await call(s, 'get_live_categories'));
+            if (kind === 'live') return liveCats.filter((x: any) => !isMovieCat(x.category_name) && !isSeriesCat(x.category_name)) as any;
+            const vod = normCats(await call(s, kind === 'movie' ? 'get_vod_categories' : 'get_series_categories'));
+            const moved = liveCats
+              .filter((x: any) => (kind === 'movie' ? isMovieCat(x.category_name) : isSeriesCat(x.category_name)))
+              .map((x: any) => ({ category_id: 'L:' + x.category_id, category_name: x.category_name }));
+            return [...vod, ...moved] as any;
+          }
+
+          export async function getItems(s: Session, kind: Kind, categoryId: string): Promise<Item[]> {
+            const c = await ensure(s);
+            if (!c) {
+              if (kind !== 'live') return [];
+              if (categoryId === 'L:YT') return ytItems(YT_LIVE);
+              const l = await loadLive();
+              return l.items[categoryId.replace('L:', '')] || [];
+            }
+            const fromLive = kind === 'live' || categoryId.startsWith('L:');
+            const cid = categoryId.replace('L:', '');
+            const action = fromLive ? 'get_live_streams' : kind === 'movie' ? 'get_vod_streams' : 'get_series';
+            const j = await call(s, action, `&category_id=${encodeURIComponent(cid)}`);
+            return (Array.isArray(j) ? j : []).map((x: any) => {
+              const raw = Number(kind === 'series' && !fromLive ? x.series_id : x.stream_id);
+              const id = fromLive && kind !== 'live' ? 100000000 + raw : raw;
+              return { id, name: String(x.name || ''), image: String(x.stream_icon || x.cover || ''), ext: fromLive ? 'm3u8' : (x.container_extension || 'mp4') };
+            }) as any;
+          }
+
+          export const getSeriesInfo = async (s: Session, id: number): Promise<SeriesInfo> => {
+            const c = await ensure(s);
+            if (!c) return { info: { name: '', cover: '', plot: '', cast: '', genre: '', rating: '' }, episodes: {} } as any;
+            const j = await call(s, 'get_series_info', `&series_id=${id}`);
+            return j as any;
+          };
+
+          export const liveUrl = (s: Session, id: number) =>
+            creds ? `${creds.base}/live/${creds.u}/${creds.p}/${id}.m3u8` : (urlById.get(id) || '');
+          export const movieUrl = (s: Session, id: number, ext = 'mp4') => {
+            if (!creds) return urlById.get(id) || '';
+            if (id >= 100000000) return `${creds.base}/live/${creds.u}/${creds.p}/${id - 100000000}.m3u8`;
+            return `${creds.base}/movie/${creds.u}/${creds.p}/${id}.${ext}`;
+          };
+          export const episodeUrl = (s: Session, id: string, ext = 'mp4') =>
+            creds ? `${creds.base}/series/${creds.u}/${creds.p}/${id}.${ext}` : '';
+
+          let allLive: any[] | null = null;
+          let allVod: any[] | null = null;
+          const normName = (x: string) => ' ' + String(x).toLowerCase().replace(/[^a-z0-9\u0600-\u06ff]+/g, ' ').trim() + ' ';
+
+          export async function findChannel(s: Session, name: string): Promise<{ url: string; title: string } | null> {
+            const q = normName(name);
+            const c = await ensure(s);
+            if (!c) {
+              const l = await loadLive();
+              for (const g of Object.keys(l.items)) {
+                const hit: any = l.items[g].find((x: any) => normName(x.name).includes(q));
+                if (hit) return { url: urlById.get(Number(hit.id)) || '', title: String(hit.name) };
+              }
+              return null;
+            }
+            if (!allLive) { const j = await call(s, 'get_live_streams'); allLive = Array.isArray(j) ? j : []; }
+            const hit = allLive.find((x: any) => normName(x.name || '').includes(q));
+            if (hit) return { url: liveUrl(s, Number(hit.stream_id)), title: String(hit.name) };
+            if (!allVod) { try { const j = await call(s, 'get_vod_streams'); allVod = Array.isArray(j) ? j : []; } catch { allVod = []; } }
+            const v = allVod.find((x: any) => normName(x.name || '').includes(q));
+            if (v) return { url: movieUrl(s, Number(v.stream_id), v.container_extension || 'mp4'), title: String(v.name) };
+            return null;
+          }
+          EOF
+          done
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
