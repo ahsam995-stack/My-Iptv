@@ -1,0 +1,1290 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Unzip project
+        run: |
+          unzip -o iptv-app.zip -d /tmp/z
+          APP="$(find /tmp/z -name App.tsx -not -path "*/node_modules/*" | head -1)"
+          echo "App found at: $APP"
+          cp -r "$(dirname "$APP")"/. "$GITHUB_WORKSPACE"/
+          cd "$GITHUB_WORKSPACE"
+          ls -R src | head -50
+          
+      - name: Show auth store
+        run: |
+          cd "$GITHUB_WORKSPACE"
+          for f in $(find src -name "auth*" | head -3); do echo "=== $f"; cat "$f"; done
+          
+      - name: Patch activation with Firebase Cloud Realtime Database
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -name activation.ts -not -path "*/node_modules/*"); do
+            printf "import { Session } from '../types';\n\nexport async function activate(code: string): Promise<Session> {\n  const cleanCode = code.trim();\n  if (!cleanCode) throw new Error('يرجى إدخال كود التفعيل');\n  try {\n    const res = await fetch('https://iptv-8c164-default-rtdb.firebaseio.com/codes/' + encodeURIComponent(cleanCode) + '.json');\n    const data = await res.json();\n    if (!data || data.status !== 'active') {\n      throw new Error('كود التفعيل غير صالح أو تم إيقافه من الإدارة');\n    }\n    return { success: true, serverUrl: 'http://localhost', username: cleanCode, password: 'password' };\n  } catch (e: any) {\n    throw new Error(e.message || 'خطأ في الاتصال بقاعدة البيانات');\n  }\n}\n" > "$f"
+          done
+      - name: Device lock activation
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -name activation.ts -not -path "*/node_modules/*"); do
+          cat > "$f" << 'EOF'
+          import AsyncStorage from '@react-native-async-storage/async-storage';
+          import { Session } from '../types';
+
+          const FB = 'https://iptv-8c164-default-rtdb.firebaseio.com/codes/';
+
+          async function deviceId(): Promise<string> {
+            let id = await AsyncStorage.getItem('device_id');
+            if (!id) {
+              id = Math.random().toString(36).slice(2) + Date.now().toString(36);
+              await AsyncStorage.setItem('device_id', id);
+            }
+            return id;
+          }
+
+          export async function activate(code: string): Promise<Session> {
+            const cleanCode = code.trim();
+            if (!cleanCode) throw new Error('يرجى إدخال كود التفعيل');
+            let data: any;
+            try {
+              const res = await fetch(FB + encodeURIComponent(cleanCode) + '.json');
+              data = await res.json();
+            } catch (e) {
+              throw new Error('خطأ في الاتصال بقاعدة البيانات');
+            }
+            if (!data || data.status !== 'active') {
+              throw new Error('كود التفعيل غير صالح أو تم إيقافه من الإدارة');
+            }
+            const me = await deviceId();
+            if (data.deviceId && data.deviceId !== me) {
+              throw new Error('هذا الكود مستخدم على جهاز آخر');
+            }
+            if (!data.deviceId) {
+              const r = await fetch(FB + encodeURIComponent(cleanCode) + '/deviceId.json', { method: 'PUT', body: JSON.stringify(me) });
+              if (!r.ok) throw new Error('تعذّر ربط الكود بهذا الجهاز');
+            }
+            return { success: true, serverUrl: 'http://localhost', username: cleanCode, password: 'password' };
+          }
+          EOF
+          done
+          
+      - name: Patch xtream (live + movie genres + series)
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -name xtream.ts -not -path "*/node_modules/*"); do
+          cat > "$f" << 'EOF'
+          import { Category, Item, Kind, Session, SeriesInfo } from '../types';
+
+          export async function authenticate(s: Session) {
+            return { status: 'Active', exp_date: '2027-01-01', max_connections: '5', username: s.username };
+          }
+
+          let counter = 1000;
+          const urlById = new Map<number, string>();
+          const seriesById = new Map<number, string>();
+          const NOIMG = 'https://placehold.co/400x400/111827/ffffff.png';
+          const arImg = (id: string) => `https://archive.org/services/img/${id}`;
+          const ytUrl = (vid: string) => `https://www.youtube.com/watch?v=${vid}`;
+          const ytImg = (vid: string) => `https://img.youtube.com/vi/${vid}/hqdefault.jpg`;
+
+          const YT_LIVE: { title: string; vid: string }[] = [
+            { title: 'الجزيرة', vid: '0zc9dACzJYY' },
+            { title: 'سكاي نيوز عربية', vid: 'DTuF6hCLCGw' },
+            { title: 'العربية', vid: 'h9gGE5QxanU' },
+          ];
+          const ytItems = (list: { title: string; vid: string }[]): Item[] =>
+            list.map((v) => {
+              const id = ++counter;
+              urlById.set(id, ytUrl(v.vid));
+              return { id, name: v.title, image: ytImg(v.vid), ext: 'mp4' } as any;
+            });
+
+          const LIVE_M3U = 'https://iptv-org.github.io/iptv/languages/ara.m3u';
+          const GROUPS: Record<string, string> = {
+            News: 'أخبار', Sports: 'رياضة', Kids: 'أطفال', Movies: 'أفلام', Music: 'موسيقى',
+            Religious: 'دينية', Entertainment: 'ترفيه', General: 'عامة', Documentary: 'وثائقية',
+            Series: 'مسلسلات', Culture: 'ثقافة', Lifestyle: 'منوعات', Undefined: 'قنوات أخرى',
+          };
+          let live: { cats: Category[]; items: Record<string, Item[]> } | null = null;
+
+          async function loadLive() {
+            if (live) return live;
+            const text = await (await fetch(LIVE_M3U)).text();
+            const lines = text.split(/\r?\n/);
+            const items: Record<string, Item[]> = {};
+            for (let i = 0; i < lines.length; i++) {
+              const l = lines[i];
+              if (!l.startsWith('#EXTINF')) continue;
+              let url = '';
+              for (let j = i + 1; j < lines.length; j++) {
+                if (lines[j].trim() && !lines[j].startsWith('#')) { url = lines[j].trim(); break; }
+              }
+              if (!url.startsWith('https://')) continue;
+              const attrs: Record<string, string> = {};
+              l.replace(/([\w-]+)="([^"]*)"/g, (_m, k, v) => { attrs[k] = v; return ''; });
+              const name = l.substring(l.lastIndexOf(',') + 1).trim();
+              if (!name) continue;
+              const g = (attrs['group-title'] || 'Undefined').split(';')[0] || 'Undefined';
+              const id = ++counter;
+              urlById.set(id, url);
+              (items[g] = items[g] || []).push({ id, name, image: attrs['tvg-logo'] || NOIMG, ext: 'm3u8' } as any);
+            }
+            const cats = Object.keys(items).map((g) => ({ category_id: 'L:' + g, category_name: GROUPS[g] || g }));
+            live = { cats, items };
+            return live;
+          }
+
+          const MOVIE_CATS: Record<string, { name: string; q: string }> = {
+            '11': { name: 'أكشن', q: 'Action & Adventure' },
+            '12': { name: 'كوميدي', q: 'Comedy' },
+            '13': { name: 'دراما', q: 'Drama' },
+            '14': { name: 'رعب', q: 'Horror' },
+            '15': { name: 'رومانسي', q: 'Romance' },
+            '16': { name: 'خيال علمي', q: 'Sci-Fi & Fantasy' },
+            '17': { name: 'أنمي', q: 'Anime' },
+            '18': { name: 'وثائقي', q: 'Documentary' },
+          };
+          const SERIES_CATS: Record<string, { name: string; q: string }> = {
+            '21': { name: 'دراما', q: 'Drama' },
+            '22': { name: 'كوميدي', q: 'Comedy' },
+            '23': { name: 'أكشن ومغامرة', q: 'Action & Adventure' },
+            '24': { name: 'خيال علمي', q: 'Sci-Fi & Fantasy' },
+            '25': { name: 'أطفال', q: 'Kids' },
+            '26': { name: 'كرتون', q: 'Animation' },
+            '27': { name: 'واقعي', q: 'Reality TV' },
+            '28': { name: 'وثائقي', q: 'Documentary' },
+          };
+
+          async function mp4Files(identifier: string): Promise<string[]> {
+            const j = await (await fetch(`https://archive.org/metadata/${identifier}`)).json();
+            return (j.files || []).map((x: any) => x.name as string).filter((n: string) => /\.mp4$/i.test(n)).sort();
+          }
+
+          async function itunesGenre(genre: string, tv: boolean): Promise<Item[]> {
+            const base = `https://itunes.apple.com/search?term=${encodeURIComponent(genre)}&media=${tv ? 'tvShow&entity=tvSeason' : 'movie&entity=movie'}&limit=60&country=us`;
+            let results: any[] = [];
+            try { results = (await (await fetch(base + '&attribute=genreIndex')).json()).results || []; } catch {}
+            if (!results.length) results = (await (await fetch(base)).json()).results || [];
+            const seen = new Set<string>();
+            const out: Item[] = [];
+            for (const r of results) {
+              const raw = String(tv ? (r.collectionName || r.trackName || '') : (r.trackName || ''));
+              const name = tv ? raw.replace(/,?\s*(Season|Series)\s*\d+.*$/i, '').trim() : raw;
+              if (!name || !r.artworkUrl100 || seen.has(name)) continue;
+              seen.add(name);
+              out.push({
+                id: ++counter,
+                name,
+                image: String(r.artworkUrl100).replace(/\/\d+x\d+bb\./, '/400x400bb.'),
+                ext: 'mp4',
+              } as any);
+            }
+            return out;
+          }
+
+          export async function getCategories(s: Session, kind: Kind): Promise<Category[]> {
+            if (kind === 'live') {
+              const l = await loadLive();
+              return [{ category_id: 'L:YT', category_name: 'قنوات يوتيوب' } as any, ...l.cats];
+            }
+            const src = kind === 'movie' ? MOVIE_CATS : SERIES_CATS;
+            return Object.keys(src).map((id) => ({ category_id: id, category_name: src[id].name }));
+          }
+
+          export async function getItems(s: Session, kind: Kind, categoryId: string): Promise<Item[]> {
+            if (kind === 'live') {
+              if (categoryId === 'L:YT') return ytItems(YT_LIVE);
+              const l = await loadLive();
+              return l.items[categoryId.replace('L:', '')] || [];
+            }
+            const src = kind === 'movie' ? MOVIE_CATS : SERIES_CATS;
+            const cat = src[categoryId];
+            if (!cat) return [];
+            return itunesGenre(cat.q, kind === 'series');
+          }
+
+          export const getSeriesInfo = async (s: Session, id: number): Promise<SeriesInfo> => {
+            const ident = seriesById.get(id) || '';
+            let files: string[] = [];
+            try { files = await mp4Files(ident); } catch {}
+            return {
+              info: { name: ident, cover: arImg(ident), plot: 'محتوى مجاني ملك عام من Internet Archive', cast: '', genre: 'كلاسيكي', rating: '' },
+              episodes: { '1': files.slice(0, 60).map((n, i) => ({ id: `${ident}/${n}` as any, episode_num: i + 1, title: `الحلقة ${i + 1}`, container_extension: 'mp4', info: {} })) },
+            } as any;
+          };
+
+          export const liveUrl = (s: Session, id: number) => urlById.get(id) || '';
+          export const movieUrl = (s: Session, id: number, ext = 'mp4') => urlById.get(id) || '';
+          export const episodeUrl = (s: Session, id: string, ext = 'mp4') => `https://archive.org/download/${encodeURI(String(id))}`;
+          EOF
+          done
+
+      - name: Patch player (video + YouTube)
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -name PlayerScreen.tsx -not -path "*/node_modules/*"); do
+          cat > "$f" << 'EOF'
+          import React, { useEffect, useState } from 'react';
+          import { ActivityIndicator, Dimensions, Pressable, StyleSheet, Text, View } from 'react-native';
+          import { useVideoPlayer, VideoView } from 'expo-video';
+          import YoutubePlayer from 'react-native-youtube-iframe';
+          import { Ionicons } from '@expo/vector-icons';
+          import { colors } from '../theme';
+
+          const ytId = (u: string): string | null => {
+            const m = String(u).match(/(?:v=|youtu\.be\/|embed\/)([\w-]{11})/);
+            return m ? m[1] : null;
+          };
+
+          function Header({ navigation, title, live }: any) {
+            return (
+              <Pressable style={s.back} onPress={() => navigation.goBack()} hitSlop={12}>
+                <Ionicons name="arrow-back" size={26} color="#fff" />
+                <Text style={s.title} numberOfLines={1}>{title}{live ? '  •  مباشر' : ''}</Text>
+              </Pressable>
+            );
+          }
+
+          function YouTubeScreen({ vid, navigation, title, live }: any) {
+            const w = Dimensions.get('window').width;
+            return (
+              <View style={s.wrap}>
+                <View style={{ flex: 1, justifyContent: 'center' }}>
+                  <YoutubePlayer height={Math.round((w * 9) / 16)} width={w} videoId={vid} play={true} />
+                </View>
+                <Header navigation={navigation} title={title} live={live} />
+              </View>
+            );
+          }
+
+          function VideoScreen({ url, navigation, title, live }: any) {
+            const [status, setStatus] = useState('loading');
+            const player = useVideoPlayer(url, (p) => {
+              p.loop = false;
+              p.play();
+            });
+            useEffect(() => {
+              const sub = player.addListener('statusChange', (e: any) => setStatus(e.status));
+              return () => sub.remove();
+            }, [player]);
+            return (
+              <View style={s.wrap}>
+                <VideoView player={player} style={s.video} nativeControls contentFit="contain" />
+                <Header navigation={navigation} title={title} live={live} />
+                {status === 'loading' && <ActivityIndicator style={StyleSheet.absoluteFill} size="large" color={colors.primary} />}
+                {status === 'error' && <Text style={s.err}>تعذّر تشغيل هذا المحتوى</Text>}
+              </View>
+            );
+          }
+
+          export default function PlayerScreen({ route, navigation }: any) {
+            const { url, title, live } = route.params;
+            const vid = ytId(url);
+            if (vid) return <YouTubeScreen vid={vid} navigation={navigation} title={title} live={live} />;
+            return <VideoScreen url={url} navigation={navigation} title={title} live={live} />;
+          }
+
+          const s = StyleSheet.create({
+            wrap: { flex: 1, backgroundColor: '#000' },
+            video: { flex: 1 },
+            back: { position: 'absolute', top: 40, left: 16, right: 16, flexDirection: 'row', alignItems: 'center', gap: 10 },
+            title: { color: '#fff', fontSize: 16, fontWeight: '700', flex: 1 },
+            err: { position: 'absolute', alignSelf: 'center', top: '45%', color: colors.danger, fontSize: 16 },
+          });
+          EOF
+          done
+
+      - name: Patch browse screen (sections grid + genres + search + Auto Logout)
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -name BrowseScreen.tsx -not -path "*/node_modules/*"); do
+          cat > "$f" << 'EOF'
+          import React, { useEffect, useMemo, useState } from 'react';
+          import { ActivityIndicator, Alert, BackHandler, FlatList, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+          import { SafeAreaView } from 'react-native-safe-area-context';
+          import { useNavigation } from '@react-navigation/native';
+          import { Ionicons } from '@expo/vector-icons';
+          import { useAuth } from '../store/auth';
+          import { Category, Item, Kind } from '../types';
+          import * as api from '../api/xtream';
+          import CategoryChips from '../components/CategoryChips';
+          import { colors } from '../theme';
+
+          const COLS = 3;
+
+          const catIcon = (name: string): any => {
+            if (name.includes('أكشن')) return 'flash';
+            if (name.includes('كوميدي')) return 'happy';
+            if (name.includes('دراما')) return 'film';
+            if (name.includes('رعب')) return 'skull';
+            if (name.includes('رومانسي')) return 'heart';
+            if (name.includes('خيال')) return 'rocket';
+            if (name.includes('أنمي')) return 'sparkles';
+            if (name.includes('كرتون')) return 'color-palette';
+            if (name.includes('واقعي')) return 'videocam';
+            if (name.includes('وثائقي')) return 'earth';
+            if (name.includes('يوتيوب')) return 'logo-youtube';
+            if (name.includes('أخبار')) return 'newspaper';
+            if (name.includes('رياضة')) return 'football';
+            if (name.includes('أطفال')) return 'happy';
+            if (name.includes('أفلام')) return 'film';
+            if (name.includes('موسيقى')) return 'musical-notes';
+            if (name.includes('دينية')) return 'moon';
+            if (name.includes('مسلسلات')) return 'videocam';
+            if (name.includes('ثقافة')) return 'book';
+            if (name.includes('ترفيه') || name.includes('منوعات')) return 'sparkles';
+            return 'tv';
+          };
+
+          export default function BrowseScreen({ kind }: { kind: Kind }) {
+            const { session, logout } = useAuth();
+            const nav = useNavigation<any>();
+            const isLive = kind === 'live';
+            const hasGrid = true;
+            const [cats, setCats] = useState<Category[]>([]);
+            const [cat, setCat] = useState<string | null>(null);
+            const [opened, setOpened] = useState(!hasGrid);
+            const [items, setItems] = useState<Item[]>([]);
+            const [q, setQ] = useState('');
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState('');
+
+            // ---------- فحص تلقائي لحظي للتحقق من إيقاف الكود ----------
+            useEffect(() => {
+              if (!session?.username) return;
+              const checkStatus = async () => {
+                try {
+                  const res = await fetch(`https://iptv-8c164-default-rtdb.firebaseio.com/codes/${session.username}.json`);
+                  const data = await res.json();
+                  if (!data || data.status !== 'active') {
+                    logout(); // تسجيل خروج فوري وإخراج المستخدم
+                    return;
+                  }
+                  if (data.expiresAt && Date.now() > new Date(data.expiresAt).getTime()) {
+                    logout(); // تسجيل خروج عند انتهاء الوقت
+                  }
+                } catch (e) {
+                  // في حال حدوث خطأ شبكة بسيط لا نطرد المستخدم
+                }
+              };
+
+              checkStatus(); // فحص فور فتح الصفحة
+              const interval = setInterval(checkStatus, 10000); // فحص مستمر كل 10 ثوانٍ
+              return () => clearInterval(interval);
+            }, [session]);
+
+            useEffect(() => {
+              api.getCategories(session!, kind)
+                .then((c) => {
+                  setCats(c);
+                  if (hasGrid) setLoading(false);
+                  else { setCat(c[0]?.category_id ?? null); if (!c.length) setLoading(false); }
+                })
+                .catch((e) => { setError(e.message); setLoading(false); });
+            }, [kind]);
+
+            useEffect(() => {
+              if (cat === null || !opened) return;
+              setLoading(true);
+              setError('');
+              api.getItems(session!, kind, cat)
+                .then(setItems)
+                .catch((e) => setError(e.message))
+                .finally(() => setLoading(false));
+            }, [cat, opened]);
+
+            const goBack = () => {
+              setOpened(false);
+              setCat(null);
+              setItems([]);
+              setQ('');
+              setError('');
+              setLoading(false);
+            };
+
+            useEffect(() => {
+              if (!hasGrid || !opened) return;
+              const sub = BackHandler.addEventListener('hardwareBackPress', () => { goBack(); return true; });
+              return () => sub.remove();
+            }, [hasGrid, opened]);
+
+            const data = useMemo(() => {
+              const t = q.trim().toLowerCase();
+              return t ? items.filter((i) => i.name.toLowerCase().includes(t)) : items;
+            }, [items, q]);
+
+            const open = (it: Item) => {
+              if (kind === 'movie') return; // الأفلام للعرض فقط
+              if (kind === 'series') { Alert.alert(it.name, 'هذا المحتوى غير متوفر حالياً'); return; }
+              const url = api.liveUrl(session!, it.id);
+              nav.navigate('Player', { url, title: it.name, live: true });
+            };
+
+            if (hasGrid && !opened) {
+              return (
+                <SafeAreaView style={s.wrap} edges={['top']}>
+                  <Text style={s.head}>{isLive ? 'القنوات' : kind === 'movie' ? 'الأفلام' : 'المسلسلات'}</Text>
+                  {loading ? (
+                    <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
+                  ) : error ? (
+                    <Text style={s.error}>{error}</Text>
+                  ) : (
+                    <FlatList
+                      key="cats"
+                      data={cats}
+                      numColumns={2}
+                      keyExtractor={(c) => c.category_id}
+                      contentContainerStyle={{ padding: 12, gap: 12 }}
+                      columnWrapperStyle={{ gap: 12 }}
+                      renderItem={({ item }) => (
+                        <Pressable style={s.catCard} onPress={() => { setCat(item.category_id); setOpened(true); }}>
+                          <Ionicons name={catIcon(item.category_name)} size={38} color={colors.primary} />
+                          <Text style={s.catText} numberOfLines={2}>{item.category_name}</Text>
+                        </Pressable>
+                      )}
+                      ListEmptyComponent={<Text style={s.error}>لا توجد أقسام</Text>}
+                    />
+                  )}
+                </SafeAreaView>
+              );
+            }
+
+            const catName = cats.find((c) => c.category_id === cat)?.category_name || '';
+            return (
+              <SafeAreaView style={s.wrap} edges={['top']}>
+                {hasGrid ? (
+                  <Pressable style={s.topBar} onPress={goBack} hitSlop={10}>
+                    <Ionicons name="arrow-back" size={24} color={colors.text} />
+                    <Text style={s.head2}>{catName}</Text>
+                  </Pressable>
+                ) : null}
+                <TextInput style={s.search} value={q} onChangeText={setQ} placeholder="بحث..." placeholderTextColor={colors.muted} />
+                {!hasGrid ? <CategoryChips data={cats} selected={cat} onSelect={setCat} /> : null}
+                {loading ? (
+                  <ActivityIndicator color={colors.primary} style={{ marginTop: 40 }} />
+                ) : error ? (
+                  <Text style={s.error}>{error}</Text>
+                ) : (
+                  <FlatList
+                    key="grid"
+                    data={data}
+                    numColumns={COLS}
+                    keyExtractor={(i) => String(i.id)}
+                    initialNumToRender={12}
+                    maxToRenderPerBatch={12}
+                    windowSize={7}
+                    removeClippedSubviews
+                    contentContainerStyle={{ padding: 12, gap: 10 }}
+                    columnWrapperStyle={{ gap: 10 }}
+                    renderItem={({ item }) =>
+                      isLive ? (
+                        <Pressable style={s.card} onPress={() => open(item)}>
+                          <View style={s.chan}>
+                            {item.image ? <Image source={{ uri: item.image }} style={s.chanImg} resizeMode="contain" /> : null}
+                          </View>
+                          <Text style={s.cardText} numberOfLines={2}>{item.name}</Text>
+                        </Pressable>
+                      ) : (
+                        <Pressable style={s.card} onPress={() => open(item)}>
+                          {item.image ? <Image source={{ uri: item.image }} style={s.poster} /> : <View style={s.poster} />}
+                          <Text style={s.cardText} numberOfLines={2}>{item.name}</Text>
+                        </Pressable>
+                      )
+                    }
+                    ListEmptyComponent={<Text style={s.error}>لا توجد نتائج</Text>}
+                  />
+                )}
+              </SafeAreaView>
+            );
+          }
+
+          const s = StyleSheet.create({
+            wrap: { flex: 1, backgroundColor: colors.bg },
+            head: { color: colors.text, fontSize: 22, fontWeight: '800', margin: 16, marginBottom: 4 },
+            topBar: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingHorizontal: 16, paddingTop: 10 },
+            head2: { color: colors.text, fontSize: 18, fontWeight: '700', flex: 1 },
+            catCard: { flex: 1, backgroundColor: colors.card, borderRadius: 16, borderWidth: 1, borderColor: colors.border, paddingVertical: 26, alignItems: 'center', justifyContent: 'center', gap: 10 },
+            catText: { color: colors.text, fontSize: 15, fontWeight: '700', textAlign: 'center', paddingHorizontal: 8 },
+            search: { backgroundColor: colors.card, color: colors.text, margin: 12, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, borderWidth: 1, borderColor: colors.border },
+            error: { color: colors.muted, textAlign: 'center', marginTop: 40 },
+            row: { flexDirection: 'row', alignItems: 'center', backgroundColor: colors.card, borderRadius: 12, padding: 10, gap: 12 },
+            logo: { width: 48, height: 48, borderRadius: 8, backgroundColor: colors.border },
+            rowText: { color: colors.text, fontSize: 15, flex: 1 },
+            chan: { aspectRatio: 1, borderRadius: 12, backgroundColor: colors.card, borderWidth: 1, borderColor: colors.border, alignItems: 'center', justifyContent: 'center', padding: 8 },
+            chanImg: { width: '100%', height: '100%' },
+            card: { flex: 1 / COLS },
+            poster: { aspectRatio: 2 / 3, borderRadius: 10, backgroundColor: colors.border },
+            cardText: { color: colors.text, fontSize: 12, marginTop: 6 },
+          });
+          EOF
+          done
+      - name: Xtream server from Firebase
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -name xtream.ts -not -path "*/node_modules/*"); do
+          cat > "$f" << 'EOF'
+          import { Category, Item, Kind, Session, SeriesInfo } from '../types';
+
+          const FB = 'https://iptv-8c164-default-rtdb.firebaseio.com/codes/';
+          let creds: { base: string; u: string; p: string } | null = null;
+          let credsFor = '';
+
+          async function ensure(s: Session) {
+            if (creds && credsFor === s.username) return creds;
+            const r = await fetch(FB + encodeURIComponent(s.username) + '.json');
+            let d = await r.json();
+            if (d && d.line) {
+              const r2 = await fetch('https://iptv-8c164-default-rtdb.firebaseio.com/lines/' + encodeURIComponent(String(d.line)) + '.json');
+              d = await r2.json();
+            }
+            if (!d || !d.serverUrl || !d.username || !d.password) {
+              throw new Error('بيانات السيرفر غير موجودة لهذا الكود');
+            }
+            creds = { base: String(d.serverUrl).replace(/\/+$/, ''), u: String(d.username), p: String(d.password) };
+            credsFor = s.username;
+            return creds;
+          }
+
+          async function call(s: Session, action: string, extra = ''): Promise<any> {
+            const c = await ensure(s);
+            const url = `${c.base}/player_api.php?username=${encodeURIComponent(c.u)}&password=${encodeURIComponent(c.p)}&action=${action}${extra}`;
+            const r = await fetch(url);
+            if (!r.ok) throw new Error('تعذّر الاتصال بالسيرفر');
+            return r.json();
+          }
+
+          export async function authenticate(s: Session) {
+            return { status: 'Active', exp_date: '2027-01-01', max_connections: '5', username: s.username };
+          }
+
+          export async function getCategories(s: Session, kind: Kind): Promise<Category[]> {
+            const action = kind === 'live' ? 'get_live_categories' : kind === 'movie' ? 'get_vod_categories' : 'get_series_categories';
+            const j = await call(s, action);
+            return (Array.isArray(j) ? j : []).map((c: any) => ({ category_id: String(c.category_id), category_name: String(c.category_name) })) as any;
+          }
+
+          export async function getItems(s: Session, kind: Kind, categoryId: string): Promise<Item[]> {
+            const action = kind === 'live' ? 'get_live_streams' : kind === 'movie' ? 'get_vod_streams' : 'get_series';
+            const j = await call(s, action, `&category_id=${encodeURIComponent(categoryId)}`);
+            return (Array.isArray(j) ? j : []).map((x: any) => ({
+              id: Number(kind === 'series' ? x.series_id : x.stream_id),
+              name: String(x.name || ''),
+              image: String(x.stream_icon || x.cover || ''),
+              ext: x.container_extension || (kind === 'live' ? 'm3u8' : 'mp4'),
+            })) as any;
+          }
+
+          export const getSeriesInfo = async (s: Session, id: number): Promise<SeriesInfo> => {
+            const j = await call(s, 'get_series_info', `&series_id=${id}`);
+            return j as any;
+          };
+
+          export const liveUrl = (s: Session, id: number) => creds ? `${creds.base}/live/${creds.u}/${creds.p}/${id}.m3u8` : '';
+          export const movieUrl = (s: Session, id: number, ext = 'mp4') => creds ? `${creds.base}/movie/${creds.u}/${creds.p}/${id}.${ext}` : '';
+          export const episodeUrl = (s: Session, id: string, ext = 'mp4') => creds ? `${creds.base}/series/${creds.u}/${creds.p}/${id}.${ext}` : '';
+          let allLive: any[] | null = null;
+          let allVod: any[] | null = null;
+          const normName = (x: string) => ' ' + String(x).toLowerCase().replace(/[^a-z0-9\u0600-\u06ff]+/g, ' ').trim() + ' ';
+
+          export async function findChannel(s: Session, name: string): Promise<{ url: string; title: string } | null> {
+            const q = normName(name);
+            if (!allLive) { const j = await call(s, 'get_live_streams'); allLive = Array.isArray(j) ? j : []; }
+            const hit = allLive.find((x: any) => normName(x.name || '').includes(q));
+            if (hit) return { url: liveUrl(s, Number(hit.stream_id)), title: String(hit.name) };
+            if (!allVod) { try { const j = await call(s, 'get_vod_streams'); allVod = Array.isArray(j) ? j : []; } catch { allVod = []; } }
+            const v = allVod.find((x: any) => normName(x.name || '').includes(q));
+            if (v) return { url: movieUrl(s, Number(v.stream_id), v.container_extension || 'mp4'), title: String(v.name) };
+            return null;
+          }
+          EOF
+          done
+
+      - name: Enable movies and series playback
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -name BrowseScreen.tsx -not -path "*/node_modules/*"); do
+          python3 - "$f" << 'PY'
+          import sys, re
+          p = sys.argv[1]
+          t = open(p, encoding='utf-8').read()
+          t = re.sub(r"if \(kind === 'movie'\) return;[^\n]*\n", "", t)
+          t = re.sub(r"if \(kind === 'series'\) \{ Alert\.alert[^\n]*\n", "if (kind === 'series') return nav.navigate('SeriesDetail', { id: it.id, name: it.name });\n", t)
+          t = t.replace("const url = api.liveUrl(session!, it.id);", "const url = kind === 'live' ? api.liveUrl(session!, it.id) : api.movieUrl(session!, it.id, it.ext || 'mp4');")
+          t = t.replace("live: true });", "live: kind === 'live' });")
+          open(p, 'w', encoding='utf-8').write(t)
+          PY
+          done
+          
+      - name: Move movie channels to Movies tab
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -name xtream.ts -not -path "*/node_modules/*"); do
+          python3 - "$f" << 'PY'
+          import sys, re
+          p = sys.argv[1]
+          t = open(p, encoding='utf-8').read()
+          NEW1 = r"""
+          const isMovieLive = (n: string) => /movie|film|cinema/i.test(n);
+          const fixCats = (j: any) => (Array.isArray(j) ? j : []).map((c: any) => ({ category_id: String(c.category_id), category_name: String(c.category_name) }));
+
+          export async function getCategories(s: Session, kind: Kind): Promise<Category[]> {
+            if (kind === 'series') return fixCats(await call(s, 'get_series_categories')) as any;
+            const live = fixCats(await call(s, 'get_live_categories'));
+            if (kind === 'live') return live.filter((c: any) => !isMovieLive(c.category_name)) as any;
+            const vod = fixCats(await call(s, 'get_vod_categories'));
+            const moved = live.filter((c: any) => isMovieLive(c.category_name)).map((c: any) => ({ category_id: 'L:' + c.category_id, category_name: c.category_name }));
+            return [...vod, ...moved] as any;
+          }
+
+          export async function getItems(s: Session, kind: Kind, categoryId: string): Promise<Item[]> {
+            const fromLive = kind === 'live' || categoryId.startsWith('L:');
+            const cid = categoryId.replace('L:', '');
+            const action = fromLive ? 'get_live_streams' : kind === 'movie' ? 'get_vod_streams' : 'get_series';
+            const j = await call(s, action, `&category_id=${encodeURIComponent(cid)}`);
+            return (Array.isArray(j) ? j : []).map((x: any) => {
+              const raw = Number(kind === 'series' ? x.series_id : x.stream_id);
+              const id = fromLive && kind !== 'live' ? 100000000 + raw : raw;
+              return { id, name: String(x.name || ''), image: String(x.stream_icon || x.cover || ''), ext: fromLive ? 'm3u8' : (x.container_extension || 'mp4') };
+            }) as any;
+          }
+          """
+          NEW2 = r"""
+          export const movieUrl = (s: Session, id: number, ext = 'mp4') => {
+            if (!creds) return '';
+            if (id >= 100000000) return `${creds.base}/live/${creds.u}/${creds.p}/${id - 100000000}.m3u8`;
+            return `${creds.base}/movie/${creds.u}/${creds.p}/${id}.${ext}`;
+          };
+          """
+          t = re.sub(r"export async function getCategories.*?(?=export const getSeriesInfo)", lambda m: NEW1.strip() + "\n\n", t, flags=re.S)
+          t = re.sub(r"export const movieUrl = .*?(?=export const episodeUrl)", lambda m: NEW2.strip() + "\n", t, flags=re.S)
+          open(p, 'w', encoding='utf-8').write(t)
+          PY
+          done
+          
+      - name: Patch navigator
+        run: |
+          BROWSE=$(find "$GITHUB_WORKSPACE" -name BrowseScreen.tsx -not -path "*/node_modules/*" | head -n 1)
+          if [ -z "$BROWSE" ]; then echo "ERROR: screens folder not found"; exit 1; fi
+          for f in $(find "$GITHUB_WORKSPACE" -path "*/src/navigation/RootNavigator.tsx" -not -path "*/node_modules/*"); do
+          cat > "$f" << 'EOF'
+          import React from 'react';
+          import { ActivityIndicator, View } from 'react-native';
+          import { createNativeStackNavigator } from '@react-navigation/native-stack';
+          import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+          import { Ionicons } from '@expo/vector-icons';
+          import { useAuth } from '../store/auth';
+          import { colors } from '../theme';
+          import ActivationScreen from '../screens/ActivationScreen';
+          import BrowseScreen from '../screens/BrowseScreen';
+          import SeriesDetailScreen from '../screens/SeriesDetailScreen';
+          import PlayerScreen from '../screens/PlayerScreen';
+          import SettingsScreen from '../screens/SettingsScreen';
+          import Vip from '../screens/VipScreen';
+
+          const Stack = createNativeStackNavigator();
+          const Tab = createBottomTabNavigator();
+
+          const Live = () => <BrowseScreen kind="live" />;
+          const Movies = () => <BrowseScreen kind="movie" />;
+          const Series = () => <BrowseScreen kind="series" />;
+          function Tabs() {
+            const icon = (name: any) => ({ color, size }: any) => <Ionicons name={name} color={color} size={size} />;
+            return (
+              <Tab.Navigator screenOptions={{ headerShown: false, tabBarActiveTintColor: colors.primary }}>
+                <Tab.Screen name="Live" component={Live} options={{ title: 'البث المباشر', tabBarIcon: icon('tv') }} />
+                <Tab.Screen name="Movies" component={Movies} options={{ title: 'الأفلام', tabBarIcon: icon('film') }} />
+                <Tab.Screen name="Vip" component={Vip} options={{ title: 'VIP', tabBarIcon: icon('star') }} />
+                <Tab.Screen name="Series" component={Series} options={{ title: 'المسلسلات', tabBarIcon: icon('albums') }} />
+                <Tab.Screen name="Settings" component={SettingsScreen} options={{ title: 'الحساب', tabBarIcon: icon('person') }} />
+              </Tab.Navigator>
+            );
+          }
+
+          export default function RootNavigator() {
+            const { session, loading } = useAuth();
+            if (loading) {
+              return (
+                <View style={{ flex: 1, backgroundColor: colors.bg, justifyContent: 'center' }}>
+                  <ActivityIndicator color={colors.primary} size="large" />
+                </View>
+              );
+            }
+            return (
+              <Stack.Navigator screenOptions={{ headerShown: false }}>
+                {session ? (
+                  <>
+                    <Stack.Screen name="Tabs" component={Tabs} />
+                    <Stack.Screen name="SeriesDetail" component={SeriesDetailScreen} options={{ headerShown: true, title: '' }} />
+                    <Stack.Screen name="Player" component={PlayerScreen} options={{ animation: 'fade' }} />
+                  </>
+                ) : (
+                  <Stack.Screen name="Activation" component={ActivationScreen} />
+                )}
+              </Stack.Navigator>
+            );
+          }
+          EOF
+          done
+
+      - name: VIP screen (original curated list)
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -path "*/src/navigation/RootNavigator.tsx" -not -path "*/node_modules/*"); do
+          d="$(dirname "$f")/../screens"
+          echo "VIP screen -> $d"
+          cat > "$d/VipScreen.tsx" << 'EOF'
+          import React, { useEffect, useState } from 'react';
+          import { Alert, Image, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+          import { SafeAreaView } from 'react-native-safe-area-context';
+          import { Ionicons } from '@expo/vector-icons';
+          import { colors } from '../theme';
+
+          // kind: movie / tv / app (شعار القناة من أيقونة تطبيقها) / wiki (ويكيبيديا فقط)
+          type Kind = 'movie' | 'tv' | 'app' | 'wiki';
+          type Card = { name: string; kind: Kind; term: string; match?: string; wiki?: string; lang?: string };
+          type Section = { title: string; icon: any; color: string; items: Card[] };
+
+          const SECTIONS: Section[] = [
+            {
+              title: 'قنوات رياضية', icon: 'football', color: '#30a46c',
+              items: [
+                { name: 'beIN Sports 1', kind: 'app', term: 'beIN CONNECT', match: 'bein', wiki: 'beIN Sports' },
+                { name: 'beIN Sports 2', kind: 'app', term: 'beIN CONNECT', match: 'bein', wiki: 'beIN Sports' },
+                { name: 'beIN Sports 3', kind: 'app', term: 'beIN CONNECT', match: 'bein', wiki: 'beIN Sports' },
+                { name: 'beIN Sports 4', kind: 'app', term: 'beIN CONNECT', match: 'bein', wiki: 'beIN Sports' },
+                { name: 'beIN Sports 5', kind: 'app', term: 'beIN CONNECT', match: 'bein', wiki: 'beIN Sports' },
+                { name: 'SSC Sport 1', kind: 'app', term: 'SSC Sport', match: 'ssc', wiki: 'Saudi Sports Company' },
+                { name: 'SSC Sport 2', kind: 'app', term: 'SSC Sport', match: 'ssc', wiki: 'Saudi Sports Company' },
+                { name: 'AD Sports 1', kind: 'app', term: 'AD Sports', match: 'ad sports', wiki: 'Abu Dhabi Sports Channel' },
+                { name: 'Dubai Sports 1', kind: 'app', term: 'Dubai Sports', match: 'dubai', wiki: 'Dubai Sports Channel' },
+              ],
+            },
+            {
+              title: 'أفلام أجنبية', icon: 'film', color: '#e5484d',
+              items: [
+                { name: 'Avatar', kind: 'movie', term: 'Avatar', match: 'avatar', wiki: 'Avatar 2009 film' },
+                { name: 'The Dark Knight', kind: 'movie', term: 'The Dark Knight', match: 'dark knight', wiki: 'The Dark Knight film' },
+                { name: 'Inception', kind: 'movie', term: 'Inception', match: 'inception', wiki: 'Inception film' },
+                { name: 'Interstellar', kind: 'movie', term: 'Interstellar', match: 'interstellar', wiki: 'Interstellar film' },
+                { name: 'Gladiator', kind: 'movie', term: 'Gladiator', match: 'gladiator', wiki: 'Gladiator 2000 film' },
+                { name: 'John Wick', kind: 'movie', term: 'John Wick', match: 'john wick', wiki: 'John Wick film' },
+                { name: 'Mad Max Fury Road', kind: 'movie', term: 'Mad Max Fury Road', match: 'fury road', wiki: 'Mad Max Fury Road' },
+                { name: 'Fast X', kind: 'movie', term: 'Fast X', match: 'fast x', wiki: 'Fast X' },
+                { name: 'Extraction', kind: 'movie', term: 'Extraction', match: 'extraction', wiki: 'Extraction 2020 film' },
+              ],
+            },
+            {
+              title: 'مسلسلات مشهورة', icon: 'videocam', color: '#0091ff',
+              items: [
+                { name: 'Breaking Bad', kind: 'tv', term: 'Breaking Bad', match: 'breaking bad', wiki: 'Breaking Bad' },
+                { name: 'Game of Thrones', kind: 'tv', term: 'Game of Thrones', match: 'game of thrones', wiki: 'Game of Thrones' },
+                { name: 'Stranger Things', kind: 'tv', term: 'Stranger Things', match: 'stranger things', wiki: 'Stranger Things' },
+                { name: 'Peaky Blinders', kind: 'tv', term: 'Peaky Blinders', match: 'peaky', wiki: 'Peaky Blinders TV series' },
+                { name: 'Money Heist', kind: 'tv', term: 'Money Heist', match: 'money heist', wiki: 'Money Heist' },
+                { name: 'Squid Game', kind: 'tv', term: 'Squid Game', match: 'squid game', wiki: 'Squid Game' },
+                { name: 'Vikings', kind: 'tv', term: 'Vikings', match: 'vikings', wiki: 'Vikings TV series' },
+                { name: 'الحشاشين', kind: 'wiki', term: '', wiki: 'الحشاشين مسلسل', lang: 'ar' },
+                { name: 'العتاولة', kind: 'wiki', term: '', wiki: 'العتاولة مسلسل', lang: 'ar' },
+              ],
+            },
+          ];
+
+          async function itunesImg(c: Card): Promise<string | null> {
+            try {
+              const p = c.kind === 'movie' ? 'media=movie&entity=movie'
+                : c.kind === 'tv' ? 'media=tvShow&entity=tvSeason'
+                : 'media=software&entity=software';
+              const u = `https://itunes.apple.com/search?term=${encodeURIComponent(c.term)}&${p}&limit=8&country=us`;
+              const j = await (await fetch(u)).json();
+              const m = (c.match || c.name).toLowerCase();
+              const r = (j.results || []).find((x: any) =>
+                String(x.trackName || x.collectionName || '').toLowerCase().includes(m) && x.artworkUrl100);
+              return r ? String(r.artworkUrl100).replace(/\/\d+x\d+bb\./, '/400x400bb.') : null;
+            } catch {
+              return null;
+            }
+          }
+
+          async function wikiImg(q: string, lang = 'en'): Promise<string | null> {
+            try {
+              const u = `https://${lang}.wikipedia.org/w/api.php?action=query&generator=search&gsrsearch=${encodeURIComponent(q)}&gsrlimit=1&prop=pageimages&piprop=thumbnail&pithumbsize=300&format=json&origin=*`;
+              const j = await (await fetch(u)).json();
+              const pages = j && j.query && j.query.pages;
+              if (!pages) return null;
+              const p: any = Object.values(pages)[0];
+              return (p && p.thumbnail && p.thumbnail.source) || null;
+            } catch {
+              return null;
+            }
+          }
+
+          async function getImg(c: Card): Promise<string | null> {
+            if (c.kind !== 'wiki') {
+              const a = await itunesImg(c);
+              if (a) return a;
+            }
+            return c.wiki ? wikiImg(c.wiki, c.lang) : null;
+          }
+
+          export default function VipScreen() {
+            const [imgs, setImgs] = useState<Record<string, string>>({});
+
+            useEffect(() => {
+              let alive = true;
+              SECTIONS.forEach((sec) =>
+                sec.items.forEach((it) => {
+                  getImg(it).then((u) => {
+                    if (alive && u) setImgs((m) => ({ ...m, [it.name]: u }));
+                  });
+                })
+              );
+              return () => { alive = false; };
+            }, []);
+
+            const soon = (name: string) => Alert.alert(name, 'هذا المحتوى غير متوفر حالياً');
+            return (
+              <SafeAreaView style={s.wrap} edges={['top']}>
+                <ScrollView contentContainerStyle={{ padding: 12, paddingBottom: 30 }}>
+                  <View style={s.headRow}>
+                    <Ionicons name="star" size={22} color="#f5a524" />
+                    <Text style={s.head}>VIP</Text>
+                  </View>
+                  {SECTIONS.map((sec) => (
+                    <View key={sec.title} style={{ marginBottom: 18 }}>
+                      <Text style={s.secTitle}>{sec.title}</Text>
+                      <View style={s.grid}>
+                        {sec.items.map((it) => {
+                          const uri = imgs[it.name];
+                          return (
+                            <Pressable key={it.name} style={s.card} onPress={() => soon(it.name)}>
+                              <View style={[s.pic, { backgroundColor: sec.color + '22' }]}>
+                                {uri ? (
+                                  <Image source={{ uri }} style={s.img} resizeMode="cover" />
+                                ) : (
+                                  <Ionicons name={sec.icon} size={34} color={sec.color} />
+                                )}
+                              </View>
+                              <Text style={s.name} numberOfLines={2}>{it.name}</Text>
+                            </Pressable>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  ))}
+                </ScrollView>
+              </SafeAreaView>
+            );
+          }
+
+          const s = StyleSheet.create({
+            wrap: { flex: 1, backgroundColor: colors.bg },
+            headRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12, marginHorizontal: 4 },
+            head: { color: colors.text, fontSize: 22, fontWeight: '800' },
+            secTitle: { color: colors.text, fontSize: 16, fontWeight: '700', marginBottom: 10, marginHorizontal: 4 },
+            grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+            card: { width: '31%' },
+            pic: { aspectRatio: 1, borderRadius: 14, alignItems: 'center', justifyContent: 'center', borderWidth: 1, borderColor: colors.border, overflow: 'hidden' },
+            img: { width: '100%', height: '100%' },
+            name: { color: colors.text, fontSize: 12, marginTop: 6, textAlign: 'center' },
+          });
+          EOF
+          done
+          
+      - name: Channels to Movies and Series tabs and link VIP
+        run: |
+          python3 - << 'PY'
+          import os, re
+          root = os.environ['GITHUB_WORKSPACE']
+
+          def find(name):
+              for d, _, fs in os.walk(root):
+                  if 'node_modules' in d:
+                      continue
+                  if name in fs:
+                      return os.path.join(d, name)
+              return None
+
+          CATS = r"""
+          const isMovieCat = (n: string) => /movie|film|cinema/i.test(n);
+          const isSeriesCat = (n: string) => /series|serie|tv show|مسلسل/i.test(n) && !isMovieCat(n);
+          const normCats = (j: any) => (Array.isArray(j) ? j : []).map((c: any) => ({ category_id: String(c.category_id), category_name: String(c.category_name) }));
+
+          export async function getCategories(s: Session, kind: Kind): Promise<Category[]> {
+            const live = normCats(await call(s, 'get_live_categories'));
+            if (kind === 'live') return live.filter((c: any) => !isMovieCat(c.category_name) && !isSeriesCat(c.category_name)) as any;
+            const vod = normCats(await call(s, kind === 'movie' ? 'get_vod_categories' : 'get_series_categories'));
+            const moved = live
+              .filter((c: any) => (kind === 'movie' ? isMovieCat(c.category_name) : isSeriesCat(c.category_name)))
+              .map((c: any) => ({ category_id: 'L:' + c.category_id, category_name: c.category_name }));
+            return [...vod, ...moved] as any;
+          }
+
+          export async function getItems(s: Session, kind: Kind, categoryId: string): Promise<Item[]> {
+            const fromLive = kind === 'live' || categoryId.startsWith('L:');
+            const cid = categoryId.replace('L:', '');
+            const action = fromLive ? 'get_live_streams' : kind === 'movie' ? 'get_vod_streams' : 'get_series';
+            const j = await call(s, action, `&category_id=${encodeURIComponent(cid)}`);
+            return (Array.isArray(j) ? j : []).map((x: any) => {
+              const raw = Number(kind === 'series' && !fromLive ? x.series_id : x.stream_id);
+              const id = fromLive && kind !== 'live' ? 100000000 + raw : raw;
+              return { id, name: String(x.name || ''), image: String(x.stream_icon || x.cover || ''), ext: fromLive ? 'm3u8' : (x.container_extension || 'mp4') };
+            }) as any;
+          }
+          """
+
+          URLS = r"""
+          export const movieUrl = (s: Session, id: number, ext = 'mp4') => {
+            if (!creds) return '';
+            if (id >= 100000000) return `${creds.base}/live/${creds.u}/${creds.p}/${id - 100000000}.m3u8`;
+            return `${creds.base}/movie/${creds.u}/${creds.p}/${id}.${ext}`;
+          };
+          """
+
+          FIND = r"""
+          let allLive: any[] | null = null;
+          let allVod: any[] | null = null;
+          const normName = (x: string) => ' ' + String(x).toLowerCase().replace(/[^a-z0-9\u0600-\u06ff]+/g, ' ').trim() + ' ';
+
+          export async function findChannel(s: Session, name: string): Promise<{ url: string; title: string } | null> {
+            const q = normName(name);
+            if (!allLive) { const j = await call(s, 'get_live_streams'); allLive = Array.isArray(j) ? j : []; }
+            const hit = allLive.find((x: any) => normName(x.name || '').includes(q));
+            if (hit) return { url: liveUrl(s, Number(hit.stream_id)), title: String(hit.name) };
+            if (!allVod) { try { const j = await call(s, 'get_vod_streams'); allVod = Array.isArray(j) ? j : []; } catch { allVod = []; } }
+            const v = allVod.find((x: any) => normName(x.name || '').includes(q));
+            if (v) return { url: movieUrl(s, Number(v.stream_id), v.container_extension || 'mp4'), title: String(v.name) };
+            return null;
+          }
+          """
+
+          NEWSOON = r"""const nav = useNavigation<any>();
+            const { session } = useAuth();
+            const soon = async (name: string) => {
+              try {
+                const r = await api.findChannel(session!, name);
+                if (!r) { Alert.alert(name, 'غير متوفر على السيرفر حالياً'); return; }
+                nav.navigate('Player', { url: r.url, title: r.title, live: true });
+              } catch (e: any) {
+              Alert.alert(name, 'DBG ' + String(e.message) + ' | ' + typeof api.findChannel + ' | ' + Object.keys(api).join(',')); return;
+                Alert.alert(name, e.message || 'تعذّر الاتصال');
+              }
+            };
+          """
+
+          p = find('xtream.ts')
+          if p:
+              t = open(p, encoding='utf-8').read()
+              t = re.sub(r"export async function getCategories.*?(?=export const getSeriesInfo)", lambda m: CATS.strip() + "\n\n", t, flags=re.S)
+              t = re.sub(r"export const movieUrl = .*?(?=export const episodeUrl)", lambda m: URLS.strip() + "\n", t, flags=re.S)
+              if 'findChannel' not in t:
+                  t = t.rstrip() + "\n\n" + FIND.strip() + "\n"
+              open(p, 'w', encoding='utf-8').write(t)
+
+          p = find('BrowseScreen.tsx')
+          if p:
+              t = open(p, encoding='utf-8').read()
+              t = t.replace("if (kind === 'series') return nav.navigate('SeriesDetail', { id: it.id, name: it.name });", "if (kind === 'series' && it.id < 100000000) return nav.navigate('SeriesDetail', { id: it.id, name: it.name });")
+              t = t.replace("live: kind === 'live' });", "live: kind === 'live' || it.id >= 100000000 });")
+              open(p, 'w', encoding='utf-8').write(t)
+
+          p = find('VipScreen.tsx')
+          if p:
+              t = open(p, encoding='utf-8').read()
+              t = t.replace("import { colors } from '../theme';", "import { colors } from '../theme';\nimport { useNavigation } from '@react-navigation/native';\nimport { useAuth } from '../store/auth';\nimport * as api from '../api/xtream';", 1)
+              t = re.sub(r"const soon = [^\n]*\n", lambda m: NEWSOON, t, count=1)
+              open(p, 'w', encoding='utf-8').write(t)
+          PY
+          
+      - name: Release device lock on sign out
+        if: false
+        run: |
+          python3 - << 'PY'
+          import os
+          root = os.environ['GITHUB_WORKSPACE']
+
+          def find(name):
+              for d, _, fs in os.walk(root):
+                  if 'node_modules' in d:
+                      continue
+                  if name in fs:
+                      return os.path.join(d, name)
+              return None
+
+          NEWOUT = r"""const signOut = useCallback(async () => {
+            try {
+              const raw = await SecureStore.getItemAsync(KEY);
+              const id = await AsyncStorage.getItem('device_id');
+              if (raw && id) {
+                const s = JSON.parse(raw);
+                const u = 'https://iptv-8c164-default-rtdb.firebaseio.com/codes/' + encodeURIComponent(s.username) + '/deviceId.json';
+                const cur = await (await fetch(u)).json();
+                if (cur === id) await fetch(u, { method: 'DELETE' });
+              }
+            } catch (e) {}
+            await SecureStore.deleteItemAsync(KEY).catch(() => {});
+            setSession(null);
+          }, []);"""
+
+          p = find('auth.tsx')
+          if p:
+              t = open(p, encoding='utf-8').read()
+              a = t.index('const signOut = useCallback')
+              b = t.index('}, []);', a) + len('}, []);')
+              t = t[:a] + NEWOUT + t[b:]
+              if 'AsyncStorage' not in t.split('export')[0]:
+                  t = t.replace("import * as SecureStore from 'expo-secure-store';", "import * as SecureStore from 'expo-secure-store';\nimport AsyncStorage from '@react-native-async-storage/async-storage';", 1)
+              open(p, 'w', encoding='utf-8').write(t)
+
+          p = find('BrowseScreen.tsx')
+          if p:
+              t = open(p, encoding='utf-8').read()
+              t = t.replace("const { session, logout } = useAuth();", "const { session, signOut: logout } = useAuth();")
+              open(p, 'w', encoding='utf-8').write(t)
+          PY
+          
+      - name: Free channels fallback when no server
+        run: |
+          for f in $(find "$GITHUB_WORKSPACE" -name xtream.ts -not -path "*/node_modules/*"); do
+          cat > "$f" << 'EOF'
+          import { Category, Item, Kind, Session, SeriesInfo } from '../types';
+
+          const FB = 'https://iptv-8c164-default-rtdb.firebaseio.com/codes/';
+          let creds: { base: string; u: string; p: string } | null = null;
+          let credsFor = '';
+          let checked = false;
+          let counter = 1000;
+          const urlById = new Map<number, string>();
+          const NOIMG = 'https://placehold.co/400x400/111827/ffffff.png';
+          const ytUrl = (vid: string) => `https://www.youtube.com/watch?v=${vid}`;
+          const ytImg = (vid: string) => `https://img.youtube.com/vi/${vid}/hqdefault.jpg`;
+
+          async function ensure(s: Session) {
+            if (checked && credsFor === s.username) return creds;
+            try {
+              const d = await (await fetch(FB + encodeURIComponent(s.username) + '.json')).json();
+              creds = null;
+              if (d && d.serverUrl && d.username && d.password) {
+                creds = { base: String(d.serverUrl).replace(/\/+$/, ''), u: String(d.username), p: String(d.password) };
+              }
+              credsFor = s.username;
+              checked = true;
+            } catch {}
+            return creds;
+          }
+
+          async function call(s: Session, action: string, extra = ''): Promise<any> {
+            const c = await ensure(s);
+            if (!c) throw new Error('بيانات السيرفر غير موجودة');
+            const url = `${c.base}/player_api.php?username=${encodeURIComponent(c.u)}&password=${encodeURIComponent(c.p)}&action=${action}${extra}`;
+            const r = await fetch(url);
+            if (!r.ok) throw new Error('تعذّر الاتصال بالسيرفر');
+            return r.json();
+          }
+
+          export async function authenticate(s: Session) {
+            return { status: 'Active', exp_date: '2027-01-01', max_connections: '5', username: s.username };
+          }
+
+          const YT_LIVE: { title: string; vid: string }[] = [
+            { title: 'الجزيرة', vid: '0zc9dACzJYY' },
+            { title: 'سكاي نيوز عربية', vid: 'DTuF6hCLCGw' },
+            { title: 'العربية', vid: 'h9gGE5QxanU' },
+          ];
+          const ytItems = (list: { title: string; vid: string }[]): Item[] =>
+            list.map((v) => {
+              const id = ++counter;
+              urlById.set(id, ytUrl(v.vid));
+              return { id, name: v.title, image: ytImg(v.vid), ext: 'mp4' } as any;
+            });
+
+          const LIVE_M3U = 'https://iptv-org.github.io/iptv/languages/ara.m3u';
+          const GROUPS: Record<string, string> = {
+            News: 'أخبار', Sports: 'رياضة', Kids: 'أطفال', Movies: 'أفلام', Music: 'موسيقى',
+            Religious: 'دينية', Entertainment: 'ترفيه', General: 'عامة', Documentary: 'وثائقية',
+            Series: 'مسلسلات', Culture: 'ثقافة', Lifestyle: 'منوعات', Undefined: 'قنوات أخرى',
+          };
+          let live: { cats: Category[]; items: Record<string, Item[]> } | null = null;
+
+          async function loadLive() {
+            if (live) return live;
+            const text = await (await fetch(LIVE_M3U)).text();
+            const lines = text.split(/\r?\n/);
+            const items: Record<string, Item[]> = {};
+            for (let i = 0; i < lines.length; i++) {
+              const l = lines[i];
+              if (!l.startsWith('#EXTINF')) continue;
+              let url = '';
+              for (let j = i + 1; j < lines.length; j++) {
+                if (lines[j].trim() && !lines[j].startsWith('#')) { url = lines[j].trim(); break; }
+              }
+              if (!url.startsWith('https://')) continue;
+              const attrs: Record<string, string> = {};
+              l.replace(/([\w-]+)="([^"]*)"/g, (_m, k, v) => { attrs[k] = v; return ''; });
+              const name = l.substring(l.lastIndexOf(',') + 1).trim();
+              if (!name) continue;
+              const g = (attrs['group-title'] || 'Undefined').split(';')[0] || 'Undefined';
+              const id = ++counter;
+              urlById.set(id, url);
+              (items[g] = items[g] || []).push({ id, name, image: attrs['tvg-logo'] || NOIMG, ext: 'm3u8' } as any);
+            }
+            const cats = Object.keys(items).map((g) => ({ category_id: 'L:' + g, category_name: GROUPS[g] || g }));
+            live = { cats: cats as any, items };
+            return live;
+          }
+
+          const isMovieCat = (n: string) => /movie|film|cinema/i.test(n);
+          const isSeriesCat = (n: string) => /series|serie|tv show|مسلسل/i.test(n) && !isMovieCat(n);
+          const normCats = (j: any) => (Array.isArray(j) ? j : []).map((c: any) => ({ category_id: String(c.category_id), category_name: String(c.category_name) }));
+
+          export async function getCategories(s: Session, kind: Kind): Promise<Category[]> {
+            const c = await ensure(s);
+            if (!c) {
+              if (kind !== 'live') return [];
+              const l = await loadLive();
+              return [{ category_id: 'L:YT', category_name: 'قنوات يوتيوب' } as any, ...l.cats];
+            }
+            const liveCats = normCats(await call(s, 'get_live_categories'));
+            if (kind === 'live') return liveCats.filter((x: any) => !isMovieCat(x.category_name) && !isSeriesCat(x.category_name)) as any;
+            const vod = normCats(await call(s, kind === 'movie' ? 'get_vod_categories' : 'get_series_categories'));
+            const moved = liveCats
+              .filter((x: any) => (kind === 'movie' ? isMovieCat(x.category_name) : isSeriesCat(x.category_name)))
+              .map((x: any) => ({ category_id: 'L:' + x.category_id, category_name: x.category_name }));
+            return [...vod, ...moved] as any;
+          }
+
+          export async function getItems(s: Session, kind: Kind, categoryId: string): Promise<Item[]> {
+            const c = await ensure(s);
+            if (!c) {
+              if (kind !== 'live') return [];
+              if (categoryId === 'L:YT') return ytItems(YT_LIVE);
+              const l = await loadLive();
+              return l.items[categoryId.replace('L:', '')] || [];
+            }
+            const fromLive = kind === 'live' || categoryId.startsWith('L:');
+            const cid = categoryId.replace('L:', '');
+            const action = fromLive ? 'get_live_streams' : kind === 'movie' ? 'get_vod_streams' : 'get_series';
+            const j = await call(s, action, `&category_id=${encodeURIComponent(cid)}`);
+            return (Array.isArray(j) ? j : []).map((x: any) => {
+              const raw = Number(kind === 'series' && !fromLive ? x.series_id : x.stream_id);
+              const id = fromLive && kind !== 'live' ? 100000000 + raw : raw;
+              return { id, name: String(x.name || ''), image: String(x.stream_icon || x.cover || ''), ext: fromLive ? 'm3u8' : (x.container_extension || 'mp4') };
+            }) as any;
+          }
+
+          export const getSeriesInfo = async (s: Session, id: number): Promise<SeriesInfo> => {
+            const c = await ensure(s);
+            if (!c) return { info: { name: '', cover: '', plot: '', cast: '', genre: '', rating: '' }, episodes: {} } as any;
+            const j = await call(s, 'get_series_info', `&series_id=${id}`);
+            return j as any;
+          };
+
+          export const liveUrl = (s: Session, id: number) =>
+            creds ? `${creds.base}/live/${creds.u}/${creds.p}/${id}.m3u8` : (urlById.get(id) || '');
+          export const movieUrl = (s: Session, id: number, ext = 'mp4') => {
+            if (!creds) return urlById.get(id) || '';
+            if (id >= 100000000) return `${creds.base}/live/${creds.u}/${creds.p}/${id - 100000000}.m3u8`;
+            return `${creds.base}/movie/${creds.u}/${creds.p}/${id}.${ext}`;
+          };
+          export const episodeUrl = (s: Session, id: string, ext = 'mp4') =>
+            creds ? `${creds.base}/series/${creds.u}/${creds.p}/${id}.${ext}` : '';
+
+          let allLive: any[] | null = null;
+          let allVod: any[] | null = null;
+          const normName = (x: string) => ' ' + String(x).toLowerCase().replace(/[^a-z0-9\u0600-\u06ff]+/g, ' ').trim() + ' ';
+
+          export async function findChannel(s: Session, name: string): Promise<{ url: string; title: string } | null> {
+            const q = normName(name);
+            const c = await ensure(s);
+            if (!c) {
+              const l = await loadLive();
+              for (const g of Object.keys(l.items)) {
+                const hit: any = l.items[g].find((x: any) => normName(x.name).includes(q));
+                if (hit) return { url: urlById.get(Number(hit.id)) || '', title: String(hit.name) };
+              }
+              return null;
+            }
+            if (!allLive) { const j = await call(s, 'get_live_streams'); allLive = Array.isArray(j) ? j : []; }
+            const hit = allLive.find((x: any) => normName(x.name || '').includes(q));
+            if (hit) return { url: liveUrl(s, Number(hit.stream_id)), title: String(hit.name) };
+            if (!allVod) { try { const j = await call(s, 'get_vod_streams'); allVod = Array.isArray(j) ? j : []; } catch { allVod = []; } }
+            const v = allVod.find((x: any) => normName(x.name || '').includes(q));
+            if (v) return { url: movieUrl(s, Number(v.stream_id), v.container_extension || 'mp4'), title: String(v.name) };
+            return null;
+          }
+          EOF
+          done
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+
+      - name: Fix package.json versions
+        run: |
+          rm -rf node_modules package-lock.json android
+          node -e "
+          const fs = require('fs');
+          const p = JSON.parse(fs.readFileSync('package.json','utf8'));
+          p.dependencies = Object.assign({}, p.dependencies, {
+            'expo': '~51.0.39',
+            'expo-video': '~1.2.7',
+            'expo-modules-core': '~1.12.26',
+            'expo-font': '~12.0.10',
+            'react-native-safe-area-context': '4.10.5',
+            'react-native-screens': '~3.31.1',
+            '@react-navigation/native': '^6.1.18',
+            '@react-navigation/native-stack': '^6.11.0',
+            '@react-navigation/bottom-tabs': '^6.6.1',
+            '@react-native-async-storage/async-storage': '1.23.1',
+            'expo-secure-store': '~13.0.2',
+            'react-native-webview': '13.8.6',
+            'react-native-youtube-iframe': '^2.3.0'
+          });
+          p.overrides = Object.assign({}, p.overrides, {
+            'expo-modules-core': '~1.12.26',
+            'expo-font': '~12.0.10'
+          });
+          fs.writeFileSync('package.json', JSON.stringify(p, null, 2));
+          "
+
+      - name: Install Dependencies
+        run: |
+          npm install
+          npx expo install --fix
+
+      - name: Auto-install missing libraries
+        run: |
+          for i in 1 2 3 4 5; do
+            OUT=$(npx expo export --platform android 2>&1 || true)
+            MISSING=$(echo "$OUT" | grep -oP "Unable to resolve module \K[^ ]+" | head -1)
+            if [ -z "$MISSING" ]; then break; fi
+            echo "Installing missing: $MISSING"
+            npx expo install "$MISSING" || npm install "$MISSING"
+          done
+
+      - name: Build Local APK
+        run: |
+          npx expo prebuild --platform android --clean
+          MANIFEST=android/app/src/main/AndroidManifest.xml
+          if ! grep -q "usesCleartextTraffic" "$MANIFEST"; then
+          sed -i 's/<application /<application android:usesCleartextTraffic="true" /' "$MANIFEST"
+          fi
+          mkdir -p android/app/src/main/res/values
+          if ! grep -rq "splashscreen_background" android/app/src/main/res/values/; then
+            printf '<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="splashscreen_background">#000000</color>\n</resources>\n' > android/app/src/main/res/values/splash_fix.xml
+          fi
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release-apk
+          path: android/app/build/outputs/apk/release/*.apk
